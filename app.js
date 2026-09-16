@@ -1,6 +1,6 @@
 /* Sistema Patrimonial — JavaScript sem dependências */
 const config = window.APP_CONFIG || {};
-const state = { page: 'casas', houses: [], month: currentMonth(), gastos: [], pagamentos: [], documentos: [], session: readSession() };
+const state = { page: 'casas', houses: [], month: currentMonth(), gastos: [], pagamentos: [], documentos: [], selectedHouseId: null, session: readSession() };
 const app = document.querySelector('#app');
 const shell = document.querySelector('.app-shell');
 const sessionKey = 'sistema-patrimonial-session';
@@ -9,13 +9,22 @@ document.querySelector('#today').textContent = new Intl.DateTimeFormat('pt-BR', 
 document.querySelector('.menu-toggle').addEventListener('click', () => document.querySelector('.sidebar').classList.toggle('open'));
 document.querySelectorAll('.nav-link').forEach(button => button.addEventListener('click', () => goTo(button.dataset.page)));
 document.querySelector('#sign-out').addEventListener('click', signOut);
+document.querySelector('#sign-out-sidebar').addEventListener('click', signOut);
 
 function currentMonth() { return new Date().toISOString().slice(0, 7); }
 function readSession() { try { return JSON.parse(localStorage.getItem('sistema-patrimonial-session')) || null; } catch { return null; } }
 function saveSession(session) { state.session = session; localStorage.setItem(sessionKey, JSON.stringify(session)); }
 function isoMonth(month) { return `${month}-01`; }
 function money(value) { return Number(value || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }); }
-function dateTime(value) { return value ? new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value)) : '-'; }
+function dateTime(value) {
+  if (!value) return '-';
+  // Datas do Supabase sem horário (YYYY-MM-DD) não devem sofrer conversão de fuso.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(value))) {
+    const [year, month, day] = String(value).split('-');
+    return `${day}/${month}/${year}`;
+  }
+  return new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value));
+}
 function houseName(house) { return `${house.rua}, ${house.numero}${house.complemento ? ` — ${house.complemento}` : ''}`; }
 function esc(value) { return String(value ?? '').replace(/[&<>'"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]); }
 function configured() { return config.SUPABASE_URL && config.SUPABASE_ANON_KEY && !config.SUPABASE_URL.includes('SEU-PROJETO'); }
@@ -64,7 +73,7 @@ async function refresh() {
   try { setLoading(); if (state.page === 'casas') await loadCasas(); if (state.page === 'pagamentos') await loadPagamentos(); if (state.page === 'gastos') await loadGastos(); if (state.page === 'documentos') await loadDocumentos(); }
   catch (error) { showError(error); }
 }
-async function fetchHouses() { state.houses = await api(rest('casa', 'select=id,created_at,rua,numero,renda,complemento&order=id.desc')); return state.houses; }
+async function fetchHouses() { state.houses = await api(rest('casa', 'select=id,created_at,rua,numero,renda,valor_casa,complemento&order=id.desc')); return state.houses; }
 
 function heading(eyebrow, title, subtitle, action = '') { return `<div class="page-heading"><div><p class="eyebrow">${eyebrow}</p><h1>${title}</h1><p class="subtitle">${subtitle}</p></div>${action}</div>`; }
 async function loadCasas() {
@@ -75,10 +84,100 @@ async function loadCasas() {
   <section class="card form-card"><h2 class="card-title">Cadastrar imóvel</h2><form id="house-form" class="form-grid"><div class="field"><label>Rua *</label><input name="rua" required></div><div class="field"><label>Número *</label><input name="numero" type="number" min="1" required></div><div class="field"><label>Complemento</label><input name="complemento"></div><div class="field"><label>Renda mensal *</label><input name="renda" type="number" min="0" step="0.01" required></div><div class="form-actions"><button class="button">Cadastrar</button></div></form></section>
   <section class="card table-card"><div class="table-head"><h2>Imóveis cadastrados</h2><button class="button secondary small" id="reload">Atualizar</button></div><div class="table-wrap"><table><thead><tr><th>ID</th><th>Endereço</th><th>Renda mensal</th><th>Cadastro</th><th></th></tr></thead><tbody>${houses.length ? houses.map(h => `<tr><td>#${h.id}</td><td><strong>${esc(h.rua)}, ${esc(h.numero)}</strong>${h.complemento ? `<br><small>${esc(h.complemento)}</small>` : ''}</td><td>${money(h.renda)}</td><td>${dateTime(h.created_at)}</td><td><button class="icon-button delete" data-delete-house="${h.id}">Excluir</button></td></tr>`).join('') : '<tr><td colspan="5" class="empty">Nenhuma casa cadastrada.</td></tr>'}</tbody></table></div></section>`;
   document.querySelector('#reload').onclick = refresh;
+  injectHouseValueField();
   document.querySelector('#house-form').onsubmit = createHouse;
   app.querySelectorAll('[data-delete-house]').forEach(b => b.onclick = () => removeHouse(b.dataset.deleteHouse));
 }
-async function createHouse(event) { event.preventDefault(); const d = Object.fromEntries(new FormData(event.currentTarget)); try { await api(rest('casa'), jsonOptions('POST', { rua: d.rua.trim(), numero: Number(d.numero), complemento: d.complemento.trim() || null, renda: Number(d.renda) }, { Prefer: 'return=minimal' })); notify('Casa cadastrada com sucesso.'); refresh(); } catch (error) { notify(error.message, true); } }
+function propertyIcon() { return '<svg class="property-icon" viewBox="0 0 120 120" aria-hidden="true"><path d="M15 54 60 16l45 38v49H76V74a16 16 0 0 0-32 0v29H15Z"/></svg>'; }
+async function selectProperty(id) { state.selectedHouseId = id; await loadCasas(); }
+async function renderSelectedProperty() {
+  const house = state.houses.find(item => item.id === state.selectedHouseId); const target = document.querySelector('#selected-property');
+  if (!house || !target) return;
+  try {
+    const [payments, expenses, docs] = await Promise.all([
+      api(rest('pagamentos_casa', `select=pago,data&casa_id=eq.${house.id}&order=data.desc`)),
+      api(rest('gastos_casa', `select=descricao,categoria,valor,pago,data&casa_id=eq.${house.id}&order=data.desc`)),
+      api(rest('documentos_casa', `select=id,nome_arquivo,tipo_arquivo,descricao,data_upload&casa_id=eq.${house.id}&order=data_upload.desc`))
+    ]);
+    const totalExpenses = expenses.reduce((total, item) => total + Number(item.valor || 0), 0);
+    const paymentCount = payments.filter(item => item.pago).length;
+    target.innerHTML = `<section class="property-summary"><div class="property-summary-title">${propertyIcon()}<div><p class="eyebrow">Casa ${house.id}</p><h2>${esc(houseName(house))}</h2><p>${house.complemento ? esc(house.complemento) + ' · ' : ''}Cadastrada em ${dateTime(house.created_at)}</p></div></div><button class="icon-button delete" data-delete-house="${house.id}">Excluir casa</button></section><section class="detail-metrics"><div class="card metric"><span>Renda mensal</span><strong class="${Number(house.renda) >= 0 ? 'income-positive' : 'income-negative'}">${money(house.renda)}</strong></div><div class="card metric"><span>Pagamentos recebidos</span><strong>${paymentCount}</strong></div><div class="card metric"><span>Gastos registrados</span><strong>${money(totalExpenses)}</strong></div><div class="card metric"><span>Documentos</span><strong>${docs.length}</strong></div></section><section class="property-panels"><article class="card property-panel"><h3>Últimos pagamentos</h3>${payments.length ? payments.slice(0, 4).map(item => `<div class="property-row"><span>${esc(String(item.data).slice(0, 7))}</span><span class="pill ${item.pago ? 'ok' : 'pending'}">${item.pago ? 'Recebido' : 'Pendente'}</span></div>`).join('') : '<p class="detail-empty">Nenhum pagamento registrado.</p>'}</article><article class="card property-panel"><h3>Últimos gastos</h3>${expenses.length ? expenses.slice(0, 4).map(item => `<div class="property-row"><span><strong>${esc(item.descricao)}</strong><small>${esc(item.categoria)}</small></span><span>${money(item.valor)}<small class="${item.pago ? 'text-ok' : 'text-pending'}">${item.pago ? 'Pago' : 'Pendente'}</small></span></div>`).join('') : '<p class="detail-empty">Nenhum gasto registrado.</p>'}</article><article class="card property-panel"><h3>Documentos</h3>${docs.length ? docs.slice(0, 4).map(item => `<div class="property-row"><span><strong title="${esc(item.nome_arquivo)}">${esc(shortFileName(item.nome_arquivo))}</strong><small>${esc(item.descricao || fileType(item.tipo_arquivo))}</small></span><button class="icon-button small" data-open-property-document="${item.id}">Abrir</button></div>`).join('') : '<p class="detail-empty">Nenhum documento enviado.</p>'}</article></section>`;
+    target.querySelector('[data-delete-house]').onclick = () => removeHouse(house.id);
+    target.querySelectorAll('[data-open-property-document]').forEach(button => button.onclick = () => openPropertyDocument(Number(button.dataset.openPropertyDocument)));
+    const propertyValue = Number(house.valor_casa || 0);
+    const receivedAmount = paymentCount * Number(house.renda || 0);
+    const investment = propertyValue + totalExpenses;
+    const remaining = Math.max(0, investment - receivedAmount);
+    const monthsToPayoff = Number(house.renda) > 0 ? Math.ceil(remaining / Number(house.renda)) : null;
+    const payoffText = remaining <= 0 ? 'O investimento já foi amortizado.' : monthsToPayoff === null ? 'Informe uma renda mensal positiva para calcular.' : `${monthsToPayoff} ${monthsToPayoff === 1 ? 'mês' : 'meses'} estimados`;
+    target.insertAdjacentHTML('beforeend', `<section class="amortization-card card"><div><p class="eyebrow">Projeção financeira</p><h3>Amortização do imóvel</h3><p>Estimativa baseada no valor do imóvel, todos os gastos registrados e na renda mensal prevista.</p></div><div class="amortization-values"><span>Investido <strong>${money(investment)}</strong></span><span>Recebido <strong>${money(receivedAmount)}</strong></span><span>Falta amortizar <strong>${money(remaining)}</strong></span><span>Prazo <strong>${payoffText}</strong></span></div></section><section class="card edit-property"><div class="edit-property-head"><div><h3>Editar informações da casa</h3><p>Altere endereço, renda ou valor patrimonial.</p></div></div><form id="property-edit-form" class="form-grid"><div class="field"><label>Rua *</label><input name="rua" required value="${esc(house.rua)}"></div><div class="field"><label>Número *</label><input name="numero" type="number" min="1" required value="${esc(house.numero)}"></div><div class="field"><label>Complemento</label><input name="complemento" value="${esc(house.complemento || '')}"></div><div class="field"><label>Renda mensal *</label><input name="renda" type="number" min="0" step="0.01" required value="${esc(house.renda)}"></div><div class="field"><label>Valor da casa</label><input name="valor_casa" type="number" min="0" step="0.01" value="${house.valor_casa == null ? '' : esc(house.valor_casa)}"></div><div class="form-actions"><button class="button">Salvar alterações</button></div></form></section>`);
+    target.querySelector('#property-edit-form').onsubmit = event => updateProperty(event, house.id);
+  } catch (error) { target.innerHTML = `<div class="card empty">Não foi possível carregar as informações desta casa.<br><small>${esc(error.message)}</small></div>`; }
+}
+async function updateProperty(event, houseId) {
+  event.preventDefault(); const data = Object.fromEntries(new FormData(event.currentTarget));
+  try {
+    await api(rest('casa', `id=eq.${houseId}`), jsonOptions('PATCH', { rua: data.rua.trim(), numero: Number(data.numero), complemento: data.complemento.trim() || null, renda: Number(data.renda), valor_casa: data.valor_casa === '' ? null : Number(data.valor_casa) }, { Prefer: 'return=minimal' }));
+    notify('Informações da casa atualizadas.'); await loadCasas();
+  } catch (error) { notify(error.message, true); }
+}
+async function openPropertyDocument(id) {
+  try {
+    const records = await api(rest('documentos_casa', `select=id,nome_arquivo,caminho_arquivo&casa_id=eq.${state.selectedHouseId}&id=eq.${id}`));
+    const document = records[0];
+    if (!document) throw new Error('Documento não encontrado ou sem permissão de acesso.');
+    const data = await api(`/storage/v1/object/sign/documentos/${document.caminho_arquivo.split('/').map(encodeURIComponent).join('/')}`, jsonOptions('POST', { expiresIn: 3600 }));
+    const signed = data.signedURL || data.signedUrl;
+    if (!signed) throw new Error('Não foi possível gerar o link de visualização.');
+    window.open(signed.startsWith('http') ? signed : `${supabaseBase()}/storage/v1${signed}`, '_blank', 'noopener');
+  } catch (error) { notify(error.message, true); }
+}
+async function loadCasas() {
+  const houses = await fetchHouses();
+  if (!houses.some(item => item.id === state.selectedHouseId)) state.selectedHouseId = null;
+  const income = houses.reduce((total, house) => total + Number(house.renda || 0), 0);
+  app.innerHTML = heading('Patrimônio', 'Meus imóveis', 'Escolha uma casa para consultar todas as informações dela.', '<button class="button secondary" id="reload">Atualizar</button>') + `<section class="summary"><div class="card metric"><span>Imóveis cadastrados</span><strong>${houses.length}</strong></div><div class="card metric"><span>Renda mensal estimada</span><strong>${money(income)}</strong></div><div class="card metric"><span>Casa selecionada</span><strong>${state.selectedHouseId ? 'Casa ' + state.selectedHouseId : '—'}</strong></div></section><section class="property-picker"><div class="picker-heading"><div><p class="eyebrow">Seleção de imóvel</p><h2>Escolha uma casa</h2></div><p>Clique no ícone para abrir os detalhes.</p></div><div class="property-grid">${houses.length ? houses.map(house => `<button class="property-choice ${state.selectedHouseId === house.id ? 'selected' : ''}" data-property="${house.id}" aria-pressed="${state.selectedHouseId === house.id}">${propertyIcon()}<strong>CASA ${house.id}</strong><small>${esc(house.rua)}, ${esc(house.numero)}</small></button>`).join('') : '<div class="card empty">Você ainda não cadastrou nenhuma casa.</div>'}</div></section><div id="selected-property">${state.selectedHouseId ? '<div class="card empty">Carregando dados da casa…</div>' : '<section class="card property-empty"><div>⌂</div><h2>Selecione uma casa</h2><p>Os dados de endereço, renda, pagamentos, gastos e documentos aparecerão aqui.</p></section>'}</div><section class="card form-card"><h2 class="card-title">Cadastrar imóvel</h2><form id="house-form" class="form-grid"><div class="field"><label>Rua *</label><input name="rua" required></div><div class="field"><label>Número *</label><input name="numero" type="number" min="1" required></div><div class="field"><label>Complemento</label><input name="complemento"></div><div class="field"><label>Renda mensal *</label><input name="renda" type="number" min="0" step="0.01" required></div><div class="form-actions"><button class="button">Cadastrar</button></div></form></section>`;
+  document.querySelector('#reload').onclick = refresh;
+  const registrationCard = document.querySelector('#house-form')?.closest('.form-card');
+  registrationCard?.remove();
+  document.querySelector('.page-heading')?.insertAdjacentHTML('beforeend', '<button id="add-property" class="button">Adicionar casa</button>');
+  document.querySelector('#add-property').onclick = openPropertyForm;
+  app.querySelectorAll('[data-property]').forEach(button => button.onclick = () => selectProperty(Number(button.dataset.property)));
+  await renderHomeCalendar();
+  if (state.selectedHouseId) await renderSelectedProperty();
+}
+function openPropertyForm() {
+  document.querySelector('#add-property-modal')?.remove();
+  const modal = document.createElement('div'); modal.id = 'add-property-modal'; modal.className = 'modal-backdrop';
+  modal.innerHTML = `<section class="modal property-modal"><button class="modal-close" type="button" aria-label="Fechar">×</button><p class="eyebrow">Novo imóvel</p><h2>Adicionar casa</h2><p>Preencha as informações do imóvel.</p><form id="add-property-form" class="form-grid"><div class="field"><label>Rua *</label><input name="rua" required></div><div class="field"><label>Número *</label><input name="numero" type="number" min="1" required></div><div class="field"><label>Complemento</label><input name="complemento"></div><div class="field"><label>Renda mensal *</label><input name="renda" type="number" min="0" step="0.01" required></div><div class="field"><label>Valor da casa</label><input name="valor_casa" type="number" min="0" step="0.01" placeholder="Ex.: 250000"></div><div class="modal-actions"><button type="button" class="button secondary modal-cancel">Cancelar</button><button class="button">Cadastrar</button></div></form></section>`;
+  document.body.append(modal); modal.querySelector('#add-property-form').onsubmit = createHouse;
+  modal.querySelectorAll('.modal-close,.modal-cancel').forEach(button => button.onclick = () => modal.remove());
+}
+function injectHouseValueField() {
+  const form = document.querySelector('#house-form');
+  if (!form || form.querySelector('[name="valor_casa"]')) return;
+  const field = document.createElement('div'); field.className = 'field';
+  field.innerHTML = '<label>Valor da casa</label><input name="valor_casa" type="number" min="0" step="0.01" placeholder="Ex.: 250000">';
+  form.querySelector('.form-actions')?.before(field);
+}
+async function createHouse(event) { event.preventDefault(); const d = Object.fromEntries(new FormData(event.currentTarget)); try { await api(rest('casa'), jsonOptions('POST', { rua: d.rua.trim(), numero: Number(d.numero), complemento: d.complemento.trim() || null, renda: Number(d.renda), valor_casa: d.valor_casa === '' ? null : Number(d.valor_casa) }, { Prefer: 'return=minimal' })); document.querySelector('#add-property-modal')?.remove(); notify('Casa cadastrada com sucesso.'); refresh(); } catch (error) { notify(error.message, true); } }
+async function renderHomeCalendar() {
+  const picker = app.querySelector('.property-picker'); if (!picker) return;
+  const today = new Date(); const month = currentMonth(); const start = `${month}-01`; const endDate = new Date(`${start}T12:00:00`); endDate.setMonth(endDate.getMonth() + 1); const end = isoMonth(endDate.toISOString().slice(0, 7));
+  try {
+    const [payments, expenses] = await Promise.all([
+      api(rest('pagamentos_casa', `select=casa_id,data_pagamento&data_pagamento=gte.${start}&data_pagamento=lt.${end}&pago=eq.true`)),
+      api(rest('gastos_casa', `select=casa_id,descricao,valor,data&data=gte.${start}&data=lt.${end}`))
+    ]);
+    const events = {};
+    const addEvent = (date, label, type) => { if (!date) return; const day = Number(String(date).slice(8, 10)); if (!events[day]) events[day] = []; events[day].push({ label, type }); };
+    payments.forEach(item => addEvent(item.data_pagamento, `Pagamento recebido · Casa ${item.casa_id}`, 'payment'));
+    expenses.forEach(item => addEvent(item.data, `Gasto · ${item.descricao} (${money(item.valor)})`, 'expense'));
+    const days = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate(); const firstDay = new Date(today.getFullYear(), today.getMonth(), 1).getDay(); const blanks = Array.from({ length: firstDay }, () => '<div class="calendar-day blank"></div>').join('');
+    const cells = Array.from({ length: days }, (_, index) => { const day = index + 1; return `<div class="calendar-day ${day === today.getDate() ? 'today' : ''}"><strong>${day}</strong>${(events[day] || []).map(event => `<span class="calendar-event ${event.type}" title="${esc(event.label)}">${esc(event.label)}</span>`).join('')}</div>`; }).join('');
+    picker.insertAdjacentHTML('afterend', `<section class="calendar-card card"><div class="calendar-head"><div><p class="eyebrow">Visão geral</p><h2>Calendário de ${new Intl.DateTimeFormat('pt-BR', { month: 'long', year: 'numeric' }).format(today)}</h2></div><div class="calendar-legend"><span><i class="payment"></i>Recebidos</span><span><i class="expense"></i>Gastos</span></div></div><div class="calendar-weekdays"><span>Dom</span><span>Seg</span><span>Ter</span><span>Qua</span><span>Qui</span><span>Sex</span><span>Sáb</span></div><div class="calendar-grid">${blanks}${cells}</div></section>`);
+  } catch (error) { console.warn('Calendário indisponível:', error); }
+}
 async function removeHouse(id) { if (!confirm('Excluir esta casa? Registros relacionados podem impedir a operação.')) return; try { await api(rest('casa', `id=eq.${id}`), jsonOptions('DELETE', null, { Prefer: 'return=minimal' })); notify('Casa excluída.'); refresh(); } catch (error) { notify(error.message, true); } }
 
 async function loadPagamentos() {
@@ -91,6 +190,29 @@ async function loadPagamentos() {
   app.querySelectorAll('[data-payment]').forEach(b => b.onclick = () => setPayment(b.dataset.payment, b.dataset.paid !== 'true'));
 }
 async function setPayment(houseId, paid) { try { await api(rest('pagamentos_casa', `casa_id=eq.${houseId}&data=eq.${isoMonth(state.month)}`), jsonOptions('PATCH', { pago: paid }, { Prefer: 'return=minimal' })); notify(paid ? 'Pagamento marcado como recebido.' : 'Pagamento marcado como pendente.'); refresh(); } catch (error) { notify(error.message, true); } }
+
+async function loadPagamentos() {
+  await fetchHouses();
+  const monthDate = isoMonth(state.month);
+  const endpoint = `select=casa_id,pago,data,dia_vencimento,data_pagamento&data=eq.${monthDate}&order=casa_id.asc`;
+  let payments = await api(rest('pagamentos_casa', endpoint));
+  if (state.month === currentMonth()) {
+    const existing = new Set(payments.map(item => item.casa_id));
+    const missing = state.houses.filter(house => !existing.has(house.id)).map(house => ({ casa_id: house.id, pago: false, data: monthDate, dia_vencimento: 5 }));
+    if (missing.length) { await api(rest('pagamentos_casa'), jsonOptions('POST', missing, { Prefer: 'return=minimal,resolution=ignore-duplicates' })); payments = await api(rest('pagamentos_casa', endpoint)); }
+  }
+  const map = new Map(payments.map(item => [item.casa_id, item]));
+  const houses = state.houses.filter(house => map.has(house.id));
+  const total = houses.reduce((sum, house) => sum + Number(house.renda || 0), 0);
+  const received = houses.filter(house => map.get(house.id).pago).reduce((sum, house) => sum + Number(house.renda || 0), 0);
+  app.innerHTML = heading('Receitas', 'Pagamentos', 'Edite o dia de vencimento e acompanhe os recebimentos.') + `<section class="summary"><div class="card metric"><span>Previsto no mês</span><strong>${money(total)}</strong></div><div class="card metric"><span>Recebido</span><strong>${money(received)}</strong></div><div class="card metric"><span>Pendente</span><strong>${money(total - received)}</strong></div></section><section class="card table-card"><div class="table-head"><h2>Controle mensal</h2><div class="toolbar"><label for="payment-month">Mês</label><input class="month-control" type="month" id="payment-month" value="${state.month}"><button id="reload" class="button secondary small">Atualizar</button></div></div><div class="table-wrap"><table><thead><tr><th>Casa</th><th>Renda</th><th>Vencimento</th><th>Status</th><th>Recebido em</th><th></th></tr></thead><tbody>${houses.length ? houses.map(house => { const payment = map.get(house.id); return `<tr><td><strong>${esc(houseName(house))}</strong></td><td>${money(house.renda)}</td><td><label class="due-day">Dia <input type="number" min="1" max="31" value="${payment.dia_vencimento || 5}" data-due-house="${house.id}"></label></td><td><span class="pill ${payment.pago ? 'ok' : 'pending'}">${payment.pago ? 'Recebido' : 'Pendente'}</span></td><td>${payment.data_pagamento ? dateTime(payment.data_pagamento) : '—'}</td><td><button class="icon-button" data-payment="${house.id}" data-paid="${payment.pago}">${payment.pago ? 'Marcar pendente' : 'Marcar recebido'}</button></td></tr>`; }).join('') : '<tr><td colspan="6" class="empty">Não há pagamentos neste mês.</td></tr>'}</tbody></table></div></section>`;
+  document.querySelector('#payment-month').onchange = event => { state.month = event.target.value; refresh(); };
+  document.querySelector('#reload').onclick = refresh;
+  app.querySelectorAll('[data-payment]').forEach(button => button.onclick = () => updatePaymentStatus(button.dataset.payment, button.dataset.paid !== 'true'));
+  app.querySelectorAll('[data-due-house]').forEach(input => input.onchange = () => updatePaymentDueDay(input.dataset.dueHouse, input.value));
+}
+async function updatePaymentStatus(houseId, paid) { try { await api(rest('pagamentos_casa', `casa_id=eq.${houseId}&data=eq.${isoMonth(state.month)}`), jsonOptions('PATCH', { pago: paid, data_pagamento: paid ? new Date().toISOString().slice(0, 10) : null }, { Prefer: 'return=minimal' })); notify(paid ? 'Pagamento marcado como recebido.' : 'Pagamento marcado como pendente.'); refresh(); } catch (error) { notify(error.message, true); } }
+async function updatePaymentDueDay(houseId, rawDay) { const day = Number(rawDay); if (!Number.isInteger(day) || day < 1 || day > 31) return notify('Informe um dia entre 1 e 31.', true); try { await api(rest('pagamentos_casa', `casa_id=eq.${houseId}&data=eq.${isoMonth(state.month)}`), jsonOptions('PATCH', { dia_vencimento: day }, { Prefer: 'return=minimal' })); notify(`Vencimento alterado para o dia ${day}.`); refresh(); } catch (error) { notify(error.message, true); } }
 
 async function loadGastos() {
   await fetchHouses(); const start = isoMonth(state.month); const next = new Date(`${start}T12:00:00`); next.setMonth(next.getMonth() + 1); const end = isoMonth(next.toISOString().slice(0, 7));
@@ -150,6 +272,22 @@ async function restoreSession() {
   try { const session = await api('/auth/v1/token?grant_type=refresh_token', jsonOptions('POST', { refresh_token: state.session.refresh_token })); saveSession(session); return true; }
   catch { localStorage.removeItem(sessionKey); state.session = null; return false; }
 }
+async function renderHomeCalendar() {
+  const picker = app.querySelector('.property-picker'); if (!picker) return;
+  const today = new Date(); const month = currentMonth(); const start = `${month}-01`; const next = new Date(`${start}T12:00:00`); next.setMonth(next.getMonth() + 1); const end = isoMonth(next.toISOString().slice(0, 7));
+  try {
+    const [payments, expenses] = await Promise.all([api(rest('pagamentos_casa', `select=casa_id,data_pagamento&data_pagamento=gte.${start}&data_pagamento=lt.${end}&pago=eq.true`)), api(rest('gastos_casa', `select=casa_id,descricao,valor,data&data=gte.${start}&data=lt.${end}`))]);
+    const events = {}; const add = (date, label, type) => { if (!date) return; const day = Number(String(date).slice(8, 10)); (events[day] ||= []).push({ label, type }); };
+    payments.forEach(item => add(item.data_pagamento, `Pagamento recebido · Casa ${item.casa_id}`, 'payment')); expenses.forEach(item => add(item.data, `Gasto · ${item.descricao} (${money(item.valor)})`, 'expense'));
+    const days = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate(); const first = new Date(today.getFullYear(), today.getMonth(), 1).getDay(); const blanks = Array.from({ length: first }, () => '<div class="calendar-day blank"></div>').join('');
+    const cells = Array.from({ length: days }, (_, index) => { const day = index + 1; return `<button type="button" class="calendar-day ${day === today.getDate() ? 'today' : ''}" data-calendar-day="${day}"><strong>${day}</strong>${(events[day] || []).map(event => `<span class="calendar-event ${event.type}" title="${esc(event.label)}">${esc(event.label)}</span>`).join('')}</button>`; }).join('');
+    picker.insertAdjacentHTML('beforebegin', `<section class="calendar-card card"><div class="calendar-head"><div><p class="eyebrow">Visão geral</p><h2>Calendário de ${new Intl.DateTimeFormat('pt-BR', { month: 'long', year: 'numeric' }).format(today)}</h2></div><div class="calendar-legend"><span><i class="payment"></i>Recebidos</span><span><i class="expense"></i>Gastos</span></div></div><div class="calendar-weekdays"><span>Dom</span><span>Seg</span><span>Ter</span><span>Qua</span><span>Qui</span><span>Sex</span><span>Sáb</span></div><div class="calendar-grid">${blanks}${cells}</div><div id="calendar-day-details" class="calendar-day-details">Clique em um dia para ver os lançamentos.</div></section>`);
+    const calendar = app.querySelector('.calendar-card'); const details = app.querySelector('#calendar-day-details');
+    if (calendar && details) { const layout = document.createElement('section'); layout.className = 'calendar-layout'; calendar.before(layout); layout.append(calendar); layout.append(details); }
+    app.querySelectorAll('[data-calendar-day]').forEach(button => button.onclick = () => showCalendarDay(Number(button.dataset.calendarDay), events[Number(button.dataset.calendarDay)], today));
+  } catch (error) { console.warn('Calendário indisponível:', error); }
+}
+function showCalendarDay(day, events, referenceDate) { const target = document.querySelector('#calendar-day-details'); if (!target) return; const label = new Intl.DateTimeFormat('pt-BR', { day: 'numeric', month: 'long' }).format(new Date(referenceDate.getFullYear(), referenceDate.getMonth(), day)); target.innerHTML = events?.length ? `<strong>${label}</strong>${events.map(event => `<span class="calendar-detail ${event.type}">${esc(event.label)}</span>`).join('')}` : `<strong>${label}</strong><span>Nenhum gasto ou pagamento recebido neste dia.</span>`; }
 async function boot() { if (await restoreSession()) await openApplication(); else renderAuth(); }
 
 boot();
