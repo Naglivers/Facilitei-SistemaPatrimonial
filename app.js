@@ -7,13 +7,14 @@ const sessionKey = 'sistema-patrimonial-session';
 
 document.querySelector('#today').textContent = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'long' }).format(new Date());
 document.querySelector('.menu-toggle').addEventListener('click', () => document.querySelector('.sidebar').classList.toggle('open'));
-document.querySelectorAll('.nav-link').forEach(button => button.addEventListener('click', () => goTo(button.dataset.page)));
+document.querySelectorAll('.nav-link[data-page]').forEach(button => button.addEventListener('click', () => goTo(button.dataset.page)));
 document.querySelector('#sign-out').addEventListener('click', signOut);
 document.querySelector('#sign-out-sidebar').addEventListener('click', signOut);
+updateProfileNav();
 
 function currentMonth() { return new Date().toISOString().slice(0, 7); }
 function readSession() { try { return JSON.parse(localStorage.getItem('sistema-patrimonial-session')) || null; } catch { return null; } }
-function saveSession(session) { state.session = session; localStorage.setItem(sessionKey, JSON.stringify(session)); }
+function saveSession(session) { state.session = session; localStorage.setItem(sessionKey, JSON.stringify(session)); updateProfileNav(session?.user); }
 function isoMonth(month) { return `${month}-01`; }
 function money(value) { return Number(value || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }); }
 function dateTime(value) {
@@ -34,10 +35,11 @@ function supabaseBase() { return config.SUPABASE_URL.replace(/\/rest\/v1\/?$/, '
 
 async function api(path, options = {}) {
   if (!configured()) throw new Error('Configure o arquivo config.js com a URL e a chave anon do Supabase.');
-  const token = path.startsWith('/auth/v1') && !path.startsWith('/auth/v1/logout') ? config.SUPABASE_ANON_KEY : (state.session?.access_token || config.SUPABASE_ANON_KEY);
+  const isPublicAuth = path === '/auth/v1/signup' || path.startsWith('/auth/v1/token?');
+  const token = isPublicAuth ? config.SUPABASE_ANON_KEY : (state.session?.access_token || config.SUPABASE_ANON_KEY);
   const headers = { apikey: config.SUPABASE_ANON_KEY, Authorization: `Bearer ${token}`, ...options.headers };
   const response = await fetch(`${supabaseBase()}${path}`, { ...options, headers });
-  if (!response.ok) { const message = await response.text(); throw new Error(message || `Erro HTTP ${response.status}`); }
+  if (!response.ok) { const text = await response.text(); let message = text; try { const data = JSON.parse(text); message = data.message || data.error || text; } catch { /* Resposta sem JSON. */ } throw new Error(message || `Erro HTTP ${response.status}`); }
   if (response.status === 204) return null;
   const text = await response.text();
   return text ? JSON.parse(text) : null;
@@ -66,12 +68,100 @@ async function goTo(page) {
   state.page = page;
   document.querySelectorAll('.nav-link').forEach(b => b.classList.toggle('active', b.dataset.page === page));
   document.querySelector('.sidebar').classList.remove('open');
-  document.querySelector('#breadcrumb').textContent = page[0].toUpperCase() + page.slice(1);
+  document.querySelector('#breadcrumb').textContent = page === 'configuracoes' ? 'Configurações' : page === 'perfil' ? 'Meu perfil' : page[0].toUpperCase() + page.slice(1);
   await refresh();
 }
 async function refresh() {
+  if (state.page === 'perfil') { await renderProfile(); return; }
+  if (state.page === 'configuracoes') { renderSettings(); return; }
   try { setLoading(); if (state.page === 'casas') await loadCasas(); if (state.page === 'pagamentos') await loadPagamentos(); if (state.page === 'gastos') await loadGastos(); if (state.page === 'documentos') await loadDocumentos(); }
   catch (error) { showError(error); }
+}
+function profileName(user) {
+  const value = user?.user_metadata?.nome || user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'Meu perfil';
+  return String(value).trim() || 'Meu perfil';
+}
+function profileInitials(name) {
+  return name.split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]).join('').toUpperCase() || '●';
+}
+function updateProfileNav(user = state.session?.user) {
+  const name = profileName(user);
+  const avatar = document.querySelector('#profile-avatar');
+  const navName = document.querySelector('#profile-nav-name');
+  const navEmail = document.querySelector('#profile-nav-email');
+  if (avatar) avatar.textContent = profileInitials(name);
+  if (navName) navName.textContent = name;
+  if (navEmail) navEmail.textContent = user?.email || 'Conta e assinatura';
+}
+async function getCurrentUser() {
+  const user = await api('/auth/v1/user');
+  if (!user?.id) throw new Error('Não foi possível carregar os dados da sua conta. Entre novamente.');
+  if (state.session) saveSession({ ...state.session, user });
+  return user;
+}
+function planLabel(plan) { return ({ free: 'Free', basico: 'Básico', pro: 'Pro' })[plan] || 'Free'; }
+async function renderProfile() {
+  setLoading('Carregando perfil…');
+  try {
+    const [user, plan] = await Promise.all([getCurrentUser(), readPlan()]);
+    const meta = user.user_metadata || {};
+    const name = profileName(user);
+    const email = user.email || '';
+    const phone = meta.telefone || meta.phone || '';
+    const expires = plan.valid_until ? `Acesso pago até ${dateTime(plan.valid_until)}` : 'Plano sem mensalidade';
+    app.innerHTML = heading('Conta', 'Meu perfil', 'Gerencie seus dados pessoais, acesso e assinatura.') + `
+      <section class="profile-layout">
+        <article class="card profile-summary"><span class="profile-avatar profile-avatar-large" aria-hidden="true">${esc(profileInitials(name))}</span><div><p class="eyebrow">Conta conectada</p><h2>${esc(name)}</h2><p>${esc(email)}</p></div></article>
+        <article class="card profile-plan"><span>Plano atual</span><strong>${planLabel(plan.plan)}</strong><small>${esc(expires)}</small><button class="button secondary small" type="button" data-open-plans>Ver planos</button></article>
+      </section>
+      <section class="card profile-card"><div class="profile-card-head"><div><h2>Dados pessoais</h2><p>Essas informações ficam vinculadas à sua conta.</p></div></div>
+        <form id="profile-form" class="profile-form" novalidate>
+          <div class="field"><label for="profile-name">Nome</label><input id="profile-name" name="nome" autocomplete="name" maxlength="120" value="${esc(name)}" required></div>
+          <div class="field"><label for="profile-phone">Telefone</label><input id="profile-phone" name="telefone" autocomplete="tel" inputmode="tel" maxlength="30" placeholder="(00) 00000-0000" value="${esc(phone)}"></div>
+          <div class="field profile-email"><label for="profile-email">E-mail</label><input id="profile-email" name="email" type="email" autocomplete="email" maxlength="254" value="${esc(email)}" required><small>Ao alterar, o Supabase pode solicitar confirmação no novo e-mail.</small></div>
+          <div class="profile-password"><h3>Alterar senha</h3><p>Deixe em branco para manter sua senha atual.</p><div class="form-grid two"><div class="field"><label for="profile-password">Nova senha</label><input id="profile-password" name="password" type="password" autocomplete="new-password" minlength="8" placeholder="Mínimo de 8 caracteres"></div><div class="field"><label for="profile-confirmation">Confirmar nova senha</label><input id="profile-confirmation" name="confirmation" type="password" autocomplete="new-password" minlength="8"></div></div></div>
+          <div class="profile-actions"><button class="button" type="submit">Salvar alterações</button></div>
+        </form>
+      </section>`;
+    app.querySelector('#profile-form').onsubmit = event => updateProfile(event, user);
+    app.querySelector('[data-open-plans]').onclick = () => goTo('configuracoes');
+  } catch (error) { showError(error); }
+}
+async function updateProfile(event, user) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const submit = form.querySelector('[type="submit"]');
+  const data = Object.fromEntries(new FormData(form));
+  const nome = data.nome.trim();
+  const telefone = data.telefone.trim();
+  const email = data.email.trim().toLowerCase();
+  if (!nome) return notify('Informe seu nome.', true);
+  if (!email) return notify('Informe seu e-mail.', true);
+  if (data.password && data.password.length < 8) return notify('A nova senha deve ter pelo menos 8 caracteres.', true);
+  if (data.password !== data.confirmation) return notify('As senhas não coincidem.', true);
+  const payload = { data: { ...(user.user_metadata || {}), nome, telefone: telefone || null } };
+  if (email !== user.email) payload.email = email;
+  if (data.password) payload.password = data.password;
+  submit.disabled = true;
+  try {
+    const updated = await api('/auth/v1/user', jsonOptions('PUT', payload));
+    if (state.session) saveSession({ ...state.session, user: updated });
+    await renderProfile();
+    notify(email !== user.email ? 'Dados atualizados. Confirme a alteração de e-mail nas mensagens recebidas, se solicitado.' : 'Perfil atualizado.');
+  } catch (error) { notify(friendlyAuthError(error), true); }
+  finally { submit.disabled = false; }
+}
+function renderSettings() {
+  const dark = document.documentElement.dataset.theme === 'dark';
+  app.innerHTML = heading('Preferências', 'Configurações', 'Personalize sua experiência no sistema.') + `
+    <section class="card settings-card" aria-labelledby="appearance-title">
+      <h2 id="appearance-title" class="card-title">Aparência</h2>
+      <div class="settings-row">
+        <div><h3 id="dark-mode-label">Modo escuro</h3><p id="dark-mode-description">Use cores escuras em todas as telas. Sua preferência é salva neste navegador.</p></div>
+        <button class="theme-toggle" type="button" role="switch" aria-checked="${dark}" aria-labelledby="dark-mode-label" aria-describedby="dark-mode-description"><span class="theme-switch-knob" aria-hidden="true"></span></button>
+      </div>
+    </section><section id="billing-settings" class="billing-settings" aria-label="Planos e assinatura"><p class="subtitle">Carregando seu plano…</p></section>`;
+  renderBilling(app.querySelector('#billing-settings'));
 }
 async function fetchHouses() { state.houses = await api(rest('casa', 'select=id,created_at,rua,numero,valor_casa,complemento&order=id.desc')); return state.houses; }
 
@@ -248,7 +338,7 @@ function shortFileName(name) { return name.length > 20 ? `${name.slice(0, 20)}�
 function safeFileName(name) { return name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9._-]/g, '_'); }
 async function uploadDocument(event) { event.preventDefault(); const d = new FormData(event.currentTarget); const file = d.get('file'); if (!file || file.size > 10 * 1024 * 1024) return notify('Escolha um arquivo de até 10 MB.', true); const houseId = Number(d.get('casa_id')); const path = `casas/${houseId}/${Date.now()}_${safeFileName(file.name)}`; try { await api(`/storage/v1/object/documentos/${path.split('/').map(encodeURIComponent).join('/')}`, { method: 'POST', headers: { 'Content-Type': file.type, 'Cache-Control': '3600', 'x-upsert': 'false' }, body: file }); await api(rest('documentos_casa'), jsonOptions('POST', { casa_id: houseId, nome_arquivo: file.name, tipo_arquivo: file.type, tamanho: file.size, caminho_arquivo: path, descricao: d.get('descricao').trim() || null }, { Prefer: 'return=minimal' })); notify('Documento enviado.'); refresh(); } catch (error) { notify(error.message, true); } }
 async function openDocument(id) { const doc = state.documentos.find(d => String(d.id) === String(id)); if (!doc) return; try { const data = await api(`/storage/v1/object/sign/documentos/${doc.caminho_arquivo.split('/').map(encodeURIComponent).join('/')}`, jsonOptions('POST', { expiresIn: 3600 })); const signed = data.signedURL || data.signedUrl; if (!signed) throw new Error('O Supabase não retornou uma URL de visualização.'); window.open(signed.startsWith('http') ? signed : `${supabaseBase()}/storage/v1${signed}`, '_blank', 'noopener'); } catch (error) { notify(error.message, true); } }
-async function deleteDocument(id) { const doc = state.documentos.find(d => String(d.id) === String(id)); if (!doc || !confirm(`Excluir o documento “${doc.nome_arquivo}”?`)) return; try { await api(`/storage/v1/object/documentos/${doc.caminho_arquivo.split('/').map(encodeURIComponent).join('/')}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } }); await api(rest('documentos_casa', `id=eq.${id}`), jsonOptions('DELETE', null, { Prefer: 'return=minimal' })); notify('Documento excluído.'); refresh(); } catch (error) { notify(error.message, true); } }
+async function deleteDocument(id) { const doc = state.documentos.find(d => String(d.id) === String(id)); if (!doc || !confirm(`Excluir o documento “${doc.nome_arquivo}”?`)) return; try { await api('/storage/v1/object/documentos', jsonOptions('DELETE', { prefixes: [doc.caminho_arquivo] })); await api(rest('documentos_casa', `id=eq.${id}`), jsonOptions('DELETE', null, { Prefer: 'return=minimal' })); notify('Documento excluído.'); refresh(); } catch (error) { notify(error.message, true); } }
 
 function renderAuth(mode = 'login') {
   shell.classList.add('hidden');
@@ -274,7 +364,15 @@ async function submitAuth(event, mode) {
   } catch (error) { notify(friendlyAuthError(error), true); }
 }
 async function openApplication() {
-  document.querySelector('#auth-screen')?.remove(); shell.classList.remove('hidden'); document.querySelector('#sign-out').classList.remove('hidden'); await refresh();
+  document.querySelector('#auth-screen')?.remove(); shell.classList.remove('hidden'); document.querySelector('#sign-out').classList.remove('hidden');
+  const returning = new URLSearchParams(window.location.search).get('billing') === 'return';
+  if (returning || window.location.hash === '#configuracoes') {
+    if (returning) {
+      try { await billingRequest('status'); } catch { notify('Pagamento em verificação. Atualize o status da assinatura em instantes.'); }
+      const url = new URL(window.location.href); url.searchParams.delete('billing'); history.replaceState(null, '', url);
+    }
+    await goTo('configuracoes');
+  } else await refresh();
 }
 async function signOut() {
   try { if (configured() && state.session?.access_token) await api('/auth/v1/logout', { method: 'POST' }); } catch { /* A sessão local ainda deve ser encerrada. */ }
@@ -355,7 +453,7 @@ function openPropertyForm() {
   modal.innerHTML = `<section class="modal property-modal asset-modal"><button class="modal-close" type="button">×</button><p class="eyebrow">Novo patrimônio</p><h2>Adicionar patrimônio</h2><form id="add-property-form" class="form-grid"><div class="field"><label>Tipo *</label><select name="tipo_patrimonio" id="asset-type"><option value="casa">Casa</option><option value="carro">Carro</option><option value="outro">Outro</option></select></div><div class="field"><label>Nome / identificação *</label><input name="nome" required placeholder="Ex.: Casa Jardim ou Honda Civic"></div><div class="field"><label>Valor do patrimônio</label><input name="valor_patrimonio" type="number" min="0" step="0.01"></div><div id="asset-address-fields" class="asset-address-fields"><div class="field"><label>Rua</label><input name="rua"></div><div class="field"><label>Número</label><input name="numero" type="number" min="1"></div><div class="field"><label>Complemento</label><input name="complemento"></div></div><div class="modal-actions"><button type="button" class="button secondary modal-cancel">Cancelar</button><button class="button">Cadastrar</button></div></form></section>`;
   document.body.append(modal); const type = modal.querySelector('#asset-type'); const address = modal.querySelector('#asset-address-fields'); type.onchange = () => address.classList.toggle('hidden', type.value !== 'casa'); modal.querySelector('#add-property-form').onsubmit = createHouse; modal.querySelectorAll('.modal-close,.modal-cancel').forEach(button => button.onclick = () => modal.remove());
 }
-async function createHouse(event) { event.preventDefault(); const data = Object.fromEntries(new FormData(event.currentTarget)); try { await api(rest('patrimonio'), jsonOptions('POST', { tipo_patrimonio: data.tipo_patrimonio, nome: data.nome.trim(), rua: data.tipo_patrimonio === 'casa' ? data.rua.trim() || null : null, numero: data.tipo_patrimonio === 'casa' && data.numero !== '' ? Number(data.numero) : null, complemento: data.tipo_patrimonio === 'casa' ? data.complemento.trim() || null : null, valor_patrimonio: data.valor_patrimonio === '' ? null : Number(data.valor_patrimonio) }, { Prefer: 'return=minimal' })); document.querySelector('#add-property-modal')?.remove(); notify('Patrimônio cadastrado.'); refresh(); } catch (error) { notify(error.message, true); } }
+async function createHouse(event) { event.preventDefault(); const form = event.currentTarget; const button = form.querySelector(".button:not([type=button])"); if (button.disabled) return; button.disabled = true; const data = Object.fromEntries(new FormData(form)); try { await checkPlanQuota("asset"); await api(rest('patrimonio'), jsonOptions('POST', { tipo_patrimonio: data.tipo_patrimonio, nome: data.nome.trim(), rua: data.tipo_patrimonio === 'casa' ? data.rua.trim() || null : null, numero: data.tipo_patrimonio === 'casa' && data.numero !== '' ? Number(data.numero) : null, complemento: data.tipo_patrimonio === 'casa' ? data.complemento.trim() || null : null, valor_patrimonio: data.valor_patrimonio === '' ? null : Number(data.valor_patrimonio) }, { Prefer: 'return=minimal' })); document.querySelector('#add-property-modal')?.remove(); notify('Patrimônio cadastrado.'); refresh(); } catch (error) { notify(error.message, true); } finally { button.disabled = false; } }
 async function loadCasas() { const assets = await fetchHouses(); if (!assets.some(asset => asset.id === state.selectedHouseId)) state.selectedHouseId = null; const total = assets.reduce((sum, asset) => sum + Number(asset.valor_patrimonio || 0), 0); app.innerHTML = heading('Patrimônio', 'Meus patrimônios', 'Gerencie casas, veículos e outros bens.', '<div class="heading-actions"><button id="reload" class="button secondary">Atualizar</button><button id="add-property" class="button">Adicionar patrimônio</button></div>') + `<section class="summary"><div class="card metric"><span>Patrimônios cadastrados</span><strong>${assets.length}</strong></div><div class="card metric"><span>Valor patrimonial</span><strong>${money(total)}</strong></div><div class="card metric"><span>Selecionado</span><strong>${state.selectedHouseId ? assetLabel(assets.find(asset => asset.id === state.selectedHouseId)) : '—'}</strong></div></section><section class="property-picker"><div class="picker-heading"><div><p class="eyebrow">Seleção de patrimônio</p><h2>Escolha um patrimônio</h2></div><p>Clique em um item para abrir os detalhes.</p></div><div class="property-grid">${assets.length ? assets.map(asset => `<button class="property-choice ${state.selectedHouseId === asset.id ? 'selected' : ''}" data-property="${asset.id}">${propertyIcon(asset.tipo_patrimonio)}<strong>${esc(asset.nome)}</strong><small>${asset.tipo_patrimonio === 'casa' ? `Casa · ${esc(asset.rua || 'Sem endereço')}${asset.numero ? `, ${esc(asset.numero)}` : ''}` : asset.tipo_patrimonio === 'carro' ? 'Veículo' : 'Outro patrimônio'}</small></button>`).join('') : '<div class="card empty">Você ainda não cadastrou patrimônios.</div>'}</div></section><div id="selected-property">${state.selectedHouseId ? '<div class="card empty">Carregando dados…</div>' : '<section class="card property-empty"><div>◆</div><h2>Selecione um patrimônio</h2><p>Os detalhes financeiros, gastos e documentos aparecerão aqui.</p></section>'}</div>`; document.querySelector('#reload').onclick = refresh; document.querySelector('#add-property').onclick = openPropertyForm; app.querySelectorAll('[data-property]').forEach(button => button.onclick = () => selectProperty(Number(button.dataset.property))); await renderHomeCalendar(); if (state.selectedHouseId) await renderSelectedProperty(); const layout = app.querySelector('.calendar-layout'); const selected = app.querySelector('#selected-property'); if (layout && selected) layout.before(selected); }
 async function renderSelectedProperty() { const asset = state.houses.find(item => item.id === state.selectedHouseId); const target = document.querySelector('#selected-property'); if (!asset || !target) return; try { const [payments, expenses, docs] = await Promise.all([api(rest('pagamentos_casa', `select=id,tipo,valor,pago,data_vencimento,data_recebimento&patrimonio_id=eq.${asset.id}&order=data_vencimento.desc.nullslast`)), api(rest('gastos_casa', `select=descricao,categoria,valor,pago,data&patrimonio_id=eq.${asset.id}&order=data.desc`)), api(rest('documentos_casa', `select=id,nome_arquivo,tipo_arquivo,descricao,data_upload&patrimonio_id=eq.${asset.id}&order=data_upload.desc`))]); const expensesTotal = expenses.reduce((sum, item) => sum + Number(item.valor || 0), 0); const received = payments.filter(item => item.pago).reduce((sum, item) => sum + Number(item.valor || 0), 0); const investment = Number(asset.valor_patrimonio || 0) + expensesTotal; const remaining = Math.max(0, investment - received); target.innerHTML = `<section class="property-summary"><div class="property-summary-title">${propertyIcon(asset.tipo_patrimonio)}<div><p class="eyebrow">${esc(asset.tipo_patrimonio)}</p><h2>${esc(assetLabel(asset))}</h2><p>${asset.complemento ? esc(asset.complemento) : 'Patrimônio cadastrado'}</p></div></div><button class="icon-button delete" data-delete-house="${asset.id}">Excluir</button></section><section class="detail-metrics"><div class="card metric"><span>Valor do patrimônio</span><strong>${asset.valor_patrimonio == null ? '—' : money(asset.valor_patrimonio)}</strong></div><div class="card metric"><span>Recebido</span><strong>${money(received)}</strong></div><div class="card metric"><span>Gastos</span><strong>${money(expensesTotal)}</strong></div><div class="card metric"><span>Documentos</span><strong>${docs.length}</strong></div></section><section class="amortization-card card"><div><p class="eyebrow">Resumo financeiro</p><h3>Amortização</h3></div><div class="amortization-values"><span>Investido <strong>${money(investment)}</strong></span><span>Falta amortizar <strong>${money(remaining)}</strong></span></div></section><section class="card edit-property"><h3>Editar patrimônio</h3><form id="property-edit-form" class="form-grid"><div class="field"><label>Nome *</label><input name="nome" required value="${esc(asset.nome)}"></div><div class="field"><label>Valor</label><input name="valor_patrimonio" type="number" min="0" step="0.01" value="${asset.valor_patrimonio == null ? '' : esc(asset.valor_patrimonio)}"></div>${asset.tipo_patrimonio === 'casa' ? `<div class="field"><label>Rua</label><input name="rua" value="${esc(asset.rua || '')}"></div><div class="field"><label>Número</label><input name="numero" type="number" value="${asset.numero || ''}"></div><div class="field"><label>Complemento</label><input name="complemento" value="${esc(asset.complemento || '')}"></div>` : ''}<div class="form-actions"><button class="button">Salvar alterações</button></div></form></section>`; target.querySelector('[data-delete-house]').onclick = () => removeHouse(asset.id); target.querySelector('#property-edit-form').onsubmit = event => updateProperty(event, asset.id); } catch (error) { target.innerHTML = `<div class="card empty">Não foi possível carregar este patrimônio.<br><small>${esc(error.message)}</small></div>`; } }
 async function updateProperty(event, id) { event.preventDefault(); const data = Object.fromEntries(new FormData(event.currentTarget)); const asset = state.houses.find(item => item.id === id); try { await api(rest('patrimonio', `id=eq.${id}`), jsonOptions('PATCH', { nome: data.nome.trim(), valor_patrimonio: data.valor_patrimonio === '' ? null : Number(data.valor_patrimonio), rua: asset.tipo_patrimonio === 'casa' ? data.rua.trim() || null : null, numero: asset.tipo_patrimonio === 'casa' && data.numero !== '' ? Number(data.numero) : null, complemento: asset.tipo_patrimonio === 'casa' ? data.complemento.trim() || null : null }, { Prefer: 'return=minimal' })); notify('Patrimônio atualizado.'); await loadCasas(); } catch (error) { notify(error.message, true); } }
@@ -366,8 +464,44 @@ async function updateManualPayment(id, paid) { try { await api(rest('pagamentos_
 async function loadGastos() { await fetchHouses(); const gastos = await api(rest('gastos_casa', 'select=id,patrimonio_id,descricao,categoria,valor,pago,recorrente,data&order=data.desc')); const map = new Map(state.houses.map(asset => [asset.id, asset])); app.innerHTML = heading('Despesas', 'Gastos', 'Registre gastos associados aos seus patrimônios.') + `<section class="card form-card"><h2 class="card-title">Novo gasto</h2><form id="expense-form" class="form-grid"><div class="field"><label>Patrimônio *</label><select name="patrimonio_id" required><option value="">Selecione</option>${assetOptions()}</select></div><div class="field"><label>Descrição *</label><input name="descricao" required></div><div class="field"><label>Categoria *</label><input name="categoria" required></div><div class="field"><label>Valor *</label><input name="valor" type="number" min="0.01" step="0.01" required></div><div class="form-actions"><button class="button">Salvar gasto</button></div></form></section><section class="card table-card"><div class="table-head"><h2>Gastos</h2><button id="reload" class="button secondary small">Atualizar</button></div><div class="table-wrap"><table><thead><tr><th>Patrimônio</th><th>Descrição</th><th>Categoria</th><th>Valor</th><th>Status</th><th></th></tr></thead><tbody>${gastos.map(item => `<tr><td>${esc(map.has(item.patrimonio_id) ? assetLabel(map.get(item.patrimonio_id)) : 'Patrimônio removido')}</td><td>${esc(item.descricao)}</td><td>${esc(item.categoria)}</td><td>${money(item.valor)}</td><td><span class="pill ${item.pago ? 'ok' : 'pending'}">${item.pago ? 'Pago' : 'Pendente'}</span></td><td><button class="icon-button" data-expense-paid="${item.id}" data-paid="${item.pago}">${item.pago ? 'Desfazer' : 'Pagar'}</button></td></tr>`).join('') || '<tr><td colspan="6" class="empty">Nenhum gasto cadastrado.</td></tr>'}</tbody></table></div></section>`; document.querySelector('#expense-form').onsubmit = createExpense; document.querySelector('#reload').onclick = refresh; app.querySelectorAll('[data-expense-paid]').forEach(button => button.onclick = () => patchExpense(button.dataset.expensePaid, button.dataset.paid !== 'true')); }
 async function createExpense(event) { event.preventDefault(); const data = Object.fromEntries(new FormData(event.currentTarget)); try { await api(rest('gastos_casa'), jsonOptions('POST', { patrimonio_id: Number(data.patrimonio_id), descricao: data.descricao.trim(), categoria: data.categoria.trim(), valor: Number(data.valor), pago: false, recorrente: false, data: new Date().toISOString().slice(0, 10) }, { Prefer: 'return=minimal' })); notify('Gasto cadastrado.'); await loadGastos(); } catch (error) { notify(error.message, true); } }
 async function renderHomeCalendar() { const picker = app.querySelector('.property-picker'); if (!picker) return; const today = new Date(); const month = currentMonth(); const start = `${month}-01`; const next = new Date(`${start}T12:00:00`); next.setMonth(next.getMonth() + 1); const end = isoMonth(next.toISOString().slice(0, 7)); try { const [payments, expenses] = await Promise.all([api(rest('pagamentos_casa', `select=patrimonio_id,data_recebimento&data_recebimento=gte.${start}&data_recebimento=lt.${end}&pago=eq.true`)), api(rest('gastos_casa', `select=patrimonio_id,descricao,valor,data&data=gte.${start}&data=lt.${end}`))]); const events = {}; const add = (date, label, type) => { if (!date) return; const day = Number(String(date).slice(8, 10)); (events[day] ||= []).push({ label, type }); }; payments.forEach(item => add(item.data_recebimento, `Pagamento recebido · Patrimônio ${item.patrimonio_id}`, 'payment')); expenses.forEach(item => add(item.data, `Gasto · ${item.descricao} (${money(item.valor)})`, 'expense')); const days = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate(); const first = new Date(today.getFullYear(), today.getMonth(), 1).getDay(); const blanks = Array.from({ length: first }, () => '<div class="calendar-day blank"></div>').join(''); const cells = Array.from({ length: days }, (_, i) => { const day = i + 1; return `<button type="button" class="calendar-day ${day === today.getDate() ? 'today' : ''}" data-calendar-day="${day}"><strong>${day}</strong>${(events[day] || []).map(event => `<span class="calendar-event ${event.type}">${esc(event.label)}</span>`).join('')}</button>`; }).join(''); picker.insertAdjacentHTML('afterend', `<section class="calendar-card card"><div class="calendar-head"><div><p class="eyebrow">Visão geral</p><h2>Calendário de ${new Intl.DateTimeFormat('pt-BR', { month: 'long', year: 'numeric' }).format(today)}</h2></div></div><div class="calendar-weekdays"><span>Dom</span><span>Seg</span><span>Ter</span><span>Qua</span><span>Qui</span><span>Sex</span><span>Sáb</span></div><div class="calendar-grid">${blanks}${cells}</div><div id="calendar-day-details" class="calendar-day-details">Clique em um dia para ver os lançamentos.</div></section>`); const calendar = app.querySelector('.calendar-card'); const details = app.querySelector('#calendar-day-details'); if (calendar && details) { const layout = document.createElement('section'); layout.className = 'calendar-layout'; calendar.before(layout); layout.append(calendar); layout.append(details); } app.querySelectorAll('[data-calendar-day]').forEach(button => button.onclick = () => showCalendarDay(Number(button.dataset.calendarDay), events[Number(button.dataset.calendarDay)], today)); } catch (error) { console.warn(error); } }
-async function loadDocumentos() { await fetchHouses(); const docs = await api(rest('documentos_casa', 'select=id,patrimonio_id,nome_arquivo,tipo_arquivo,tamanho,caminho_arquivo,descricao,data_upload&order=data_upload.desc')); state.documentos = docs; const map = new Map(state.houses.map(asset => [asset.id, asset])); app.innerHTML = heading('Arquivos', 'Documentos', 'Armazene documentos dos seus patrimônios.') + `<section class="card form-card"><h2 class="card-title">Enviar documento</h2><form id="document-form" class="form-grid two"><div class="field"><label>Patrimônio *</label><select name="patrimonio_id" required><option value="">Selecione</option>${assetOptions()}</select></div><div class="field"><label>Arquivo *</label><input name="file" type="file" accept="application/pdf,image/png,image/jpeg" required></div><div class="field"><label>Descrição</label><input name="descricao"></div><div class="form-actions"><button class="button">Enviar arquivo</button></div></form><p class="upload-note">PDF, PNG ou JPEG de até 10 MB.</p></section><section class="card table-card"><div class="table-head"><h2>Documentos armazenados</h2><button id="reload" class="button secondary small">Atualizar</button></div><div class="table-wrap"><table><thead><tr><th>Patrimônio</th><th>Arquivo</th><th>Descrição</th><th>Enviado em</th><th></th></tr></thead><tbody>${docs.length ? docs.map(doc => `<tr><td>${esc(map.has(doc.patrimonio_id) ? assetLabel(map.get(doc.patrimonio_id)) : 'Patrimônio removido')}</td><td>${esc(shortFileName(doc.nome_arquivo))}</td><td>${esc(doc.descricao || '—')}</td><td>${dateTime(doc.data_upload)}</td><td><button class="icon-button" data-open-doc="${doc.id}">Abrir</button></td></tr>`).join('') : '<tr><td colspan="5" class="empty">Nenhum documento enviado.</td></tr>'}</tbody></table></div></section>`; document.querySelector('#document-form').onsubmit = uploadDocument; document.querySelector('#reload').onclick = refresh; app.querySelectorAll('[data-open-doc]').forEach(button => button.onclick = () => openDocument(button.dataset.openDoc)); }
-async function uploadDocument(event) { event.preventDefault(); const data = new FormData(event.currentTarget); const file = data.get('file'); if (!file || file.size > 10 * 1024 * 1024) return notify('Escolha um arquivo de até 10 MB.', true); const assetId = Number(data.get('patrimonio_id')); const path = `patrimonios/${assetId}/${Date.now()}_${safeFileName(file.name)}`; try { await api(`/storage/v1/object/documentos/${path.split('/').map(encodeURIComponent).join('/')}`, { method: 'POST', headers: { 'Content-Type': file.type, 'x-upsert': 'false' }, body: file }); await api(rest('documentos_casa'), jsonOptions('POST', { patrimonio_id: assetId, nome_arquivo: file.name, tipo_arquivo: file.type, tamanho: file.size, caminho_arquivo: path, descricao: data.get('descricao').trim() || null }, { Prefer: 'return=minimal' })); notify('Documento enviado.'); await loadDocumentos(); } catch (error) { notify(error.message, true); } }
+async function loadDocumentos() { await fetchHouses(); const docs = await api(rest('documentos_casa', 'select=id,patrimonio_id,nome_arquivo,tipo_arquivo,tamanho,caminho_arquivo,descricao,data_upload&order=data_upload.desc')); state.documentos = docs; const map = new Map(state.houses.map(asset => [asset.id, asset])); app.innerHTML = heading('Arquivos', 'Documentos', 'Armazene documentos dos seus patrimônios.') + `<section class="card form-card"><h2 class="card-title">Enviar documento</h2><form id="document-form" class="form-grid two"><div class="field"><label>Patrimônio *</label><select name="patrimonio_id" required><option value="">Selecione</option>${assetOptions()}</select></div><div class="field"><label>Arquivo *</label><input name="file" type="file" accept="application/pdf,image/png,image/jpeg" required></div><div class="field"><label>Descrição</label><input name="descricao"></div><div class="form-actions"><button class="button">Enviar arquivo</button></div></form><p class="upload-note">PDF, PNG ou JPEG de até 10 MB.</p></section><section class="card table-card"><div class="table-head"><h2>Documentos armazenados</h2><button id="reload" class="button secondary small">Atualizar</button></div><div class="table-wrap"><table><thead><tr><th>Patrimônio</th><th>Arquivo</th><th>Descrição</th><th>Enviado em</th><th></th></tr></thead><tbody>${docs.length ? docs.map(doc => `<tr><td>${esc(map.has(doc.patrimonio_id) ? assetLabel(map.get(doc.patrimonio_id)) : 'Patrimônio removido')}</td><td>${esc(shortFileName(doc.nome_arquivo))}</td><td>${esc(doc.descricao || '—')}</td><td>${dateTime(doc.data_upload)}</td><td><div class="action-row"><button class="icon-button" data-open-doc="${doc.id}">Abrir</button><button class="icon-button delete" data-delete-doc="${doc.id}">Excluir</button></div></td></tr>`).join('') : '<tr><td colspan="5" class="empty">Nenhum documento enviado.</td></tr>'}</tbody></table></div></section>`; document.querySelector('#document-form').onsubmit = uploadDocument; document.querySelector('#reload').onclick = refresh; app.querySelectorAll('[data-open-doc]').forEach(button => button.onclick = () => openDocument(button.dataset.openDoc)); app.querySelectorAll('[data-delete-doc]').forEach(button => button.onclick = () => deleteDocument(button.dataset.deleteDoc)); }
+async function uploadDocument(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = form.querySelector('.button');
+  if (button.disabled) return;
+  const data = new FormData(form);
+  const file = data.get('file');
+  if (!file?.size || file.size > 10 * 1024 * 1024 || !['application/pdf','image/png','image/jpeg'].includes(file.type)) return notify('Escolha um PDF, PNG ou JPEG de até 10 MB.', true);
+  const assetId = Number(data.get('patrimonio_id'));
+  const path = 'patrimonios/' + assetId + '/' + crypto.randomUUID() + '_' + safeFileName(file.name);
+  let reservation;
+  let uploaded = false;
+  button.disabled = true;
+  try {
+    await checkPlanQuota('document', assetId);
+    // A reserva de cota deve existir antes do envio ao Storage.
+    const rows = await api(rest('documentos_casa'), jsonOptions('POST', {
+      patrimonio_id: assetId, nome_arquivo: file.name, tipo_arquivo: file.type, tamanho: file.size,
+      caminho_arquivo: path, descricao: data.get('descricao').trim() || null,
+    }, { Prefer: 'return=representation' }));
+    reservation = rows[0];
+    await api('/storage/v1/object/documentos/' + path.split('/').map(encodeURIComponent).join('/'), {
+      method: 'POST', headers: { 'Content-Type': file.type, 'x-upsert': 'false' }, body: file,
+    });
+    uploaded = true;
+    notify('Documento enviado.');
+    await loadDocumentos();
+  } catch (error) {
+    if (reservation && !uploaded) {
+      try {
+        await api('/storage/v1/object/documentos', jsonOptions('DELETE', { prefixes: [path] }));
+        await api(rest('documentos_casa', 'id=eq.' + reservation.id), jsonOptions('DELETE', null));
+      } catch { notify('O envio não terminou. Exclua o documento incompleto antes de tentar novamente.', true); }
+    }
+    notify(error.message, true);
+  } finally { button.disabled = false; }
+}
 async function openPropertyDocument(id) { try { const records = await api(rest('documentos_casa', `select=id,caminho_arquivo&patrimonio_id=eq.${state.selectedHouseId}&id=eq.${id}`)); const doc = records[0]; if (!doc) throw new Error('Documento não encontrado.'); const data = await api(`/storage/v1/object/sign/documentos/${doc.caminho_arquivo.split('/').map(encodeURIComponent).join('/')}`, jsonOptions('POST', { expiresIn: 3600 })); const signed = data.signedURL || data.signedUrl; if (!signed) throw new Error('Não foi possível gerar o link.'); window.open(signed.startsWith('http') ? signed : `${supabaseBase()}/storage/v1${signed}`, '_blank', 'noopener'); } catch (error) { notify(error.message, true); } }
 async function boot() { if (await restoreSession()) await openApplication(); else renderAuth(); }
 

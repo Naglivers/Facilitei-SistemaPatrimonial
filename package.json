@@ -1,0 +1,13 @@
+{
+  "name": "facilitei-sistema-patrimonial",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/billing.test.mjs tests/database.test.mjs",
+    "test:ui": "node --test tests/ui.test.cjs"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.8",
+    "playwright": "1.62.1",
+    "supabase": "^2.117.0"
+  }
+}

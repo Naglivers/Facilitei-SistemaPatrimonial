@@ -5,18 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sistema Patrimonial</title>
   <link rel="icon" type="image/png" href="assets/logo-facilitei.png">
+  <script src="theme.js"></script>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <div class="app-shell">
     <aside class="sidebar">
-      <a class="brand" href="#casas"><img class="site-logo" src="assets/logo-facilitei.png" alt="Facilitei"><span>Sistema<br>Patrimonial</span></a>
+      <button class="profile-nav nav-link" data-page="perfil" type="button" aria-label="Abrir meu perfil"><span id="profile-avatar" class="profile-avatar" aria-hidden="true">●</span><span class="profile-nav-copy"><strong id="profile-nav-name">Meu perfil</strong><small id="profile-nav-email">Conta e assinatura</small></span></button>
       <nav aria-label="Navegação principal">
         <button class="nav-link active" data-page="casas"><span>⌂</span> Casas</button>
         <button class="nav-link" data-page="pagamentos"><span>◷</span> Pagamentos</button>
         <button class="nav-link" data-page="gastos"><span>◇</span> Gastos</button>
         <button class="nav-link" data-page="documentos"><span>▤</span> Documentos</button>
       </nav>
+      <button class="nav-link settings-nav" data-page="configuracoes" type="button"><span aria-hidden="true">⚙</span> Configurações</button>
       <button id="sign-out-sidebar" class="nav-link sign-out-sidebar" type="button"><span>↪</span> Sair da conta</button>
     </aside>
     <main class="content">
@@ -26,6 +28,7 @@
   </div>
   <div id="toast-region" class="toast-region" aria-live="polite"></div>
   <script src="config.public.js"></script>
+  <script src="billing.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

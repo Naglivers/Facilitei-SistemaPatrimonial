@@ -14,6 +14,7 @@ Aplicação web leve para gerir imóveis, pagamentos mensais, gastos e documento
 - **Gastos:** cadastrar despesas por casa, categoria e valor; marcar como pago e excluir.
 - **Documentos:** enviar PDF, PNG ou JPEG de até 10 MB, abrir por uma URL temporária e excluir. Os arquivos vão para o bucket `documentos`.
 - **Acesso:** criação de conta e login por e-mail/senha usando o Supabase Auth. A sessão fica salva no navegador até o usuário sair.
+- **Planos:** Free, Básico e Pro, com limites aplicados no banco e assinaturas mensais pelo Mercado Pago. Veja [a configuração de planos e pagamentos](docs/PLANOS_E_PAGAMENTOS.md).
 
 ## Como executar
 
@@ -107,6 +108,10 @@ styles.css          Layout responsivo e identidade visual
 app.js              Telas, regras de negócio e integração REST/Storage
 config.example.js   Modelo de configuração local
 ```
+
+## Planos e pagamentos
+
+As assinaturas usam duas Supabase Edge Functions e os webhooks do Mercado Pago. Siga o guia de [planos e pagamentos](docs/PLANOS_E_PAGAMENTOS.md) antes de disponibilizar os botões de assinatura em produção. As credenciais do Mercado Pago devem ser configuradas apenas como segredos do Supabase; nunca em `config.public.js`.
 
 ## Observações sobre o flow original
 
