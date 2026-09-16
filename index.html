@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sistema Patrimonial</title>
+  <link rel="icon" type="image/png" href="assets/logo-facilitei.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#casas"><img class="site-logo" src="assets/logo-facilitei.png" alt="Facilitei"><span>Sistema<br>Patrimonial</span></a>
+      <nav aria-label="Navegação principal">
+        <button class="nav-link active" data-page="casas"><span>⌂</span> Casas</button>
+        <button class="nav-link" data-page="pagamentos"><span>◷</span> Pagamentos</button>
+        <button class="nav-link" data-page="gastos"><span>◇</span> Gastos</button>
+        <button class="nav-link" data-page="documentos"><span>▤</span> Documentos</button>
+      </nav>
+      <p class="sidebar-note">Gestão simples de imóveis, receitas e despesas.</p>
+    </aside>
+    <main class="content">
+      <header class="topbar"><button class="menu-toggle" aria-label="Abrir menu">☰</button><div id="breadcrumb">Visão geral</div><div class="topbar-actions"><div class="today" id="today"></div><button id="sign-out" class="sign-out hidden" type="button">Sair</button></div></header>
+      <div id="app" class="page"></div>
+    </main>
+  </div>
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
