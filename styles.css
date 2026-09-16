@@ -15,4 +15,10 @@
 
 .sign-out-sidebar{margin-top:auto;color:#b8dce8}.sign-out-sidebar:hover{color:#fff}.property-modal{position:relative;max-width:690px}.property-modal .form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.property-modal .modal-actions{grid-column:1/-1}.modal-close{position:absolute;right:15px;top:12px;border:0;background:none;color:var(--muted);font-size:26px;line-height:1;cursor:pointer}@media(max-width:800px){.property-modal .form-grid{grid-template-columns:1fr}}
 
+.heading-actions{display:flex;gap:9px;flex-wrap:wrap}@media(max-width:800px){.heading-actions{margin-top:16px}}
+
+.payment-modal{background:linear-gradient(145deg,#eefaff,#fff);border:1px solid #bdefff}.payment-modal h2{color:#067fb0}.payment-modal .field{padding:10px;border-radius:9px;background:rgba(255,255,255,.75)}
+
+.asset-modal{background:linear-gradient(145deg,#eefaff,#fff);border:1px solid #bdefff}.asset-modal .field{padding:9px;border-radius:9px;background:rgba(255,255,255,.72)}.asset-address-fields{grid-column:1/-1;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:15px}.asset-emoji{font-size:62px;line-height:1;height:82px;display:grid;place-items:center}.asset-car-icon{stroke-width:6;stroke-linecap:round;stroke-linejoin:round}.asset-car-front-icon{fill:#09BBFD;stroke:none}.asset-car-front-icon .car-headlight{fill:#fff}@media(max-width:800px){.asset-address-fields{grid-template-columns:1fr}}
+
 .calendar-layout{display:grid;grid-template-columns:minmax(0,760px) minmax(220px,1fr);gap:15px;align-items:stretch;margin:0 0 25px}.calendar-layout .calendar-card{max-width:none;margin:0}.calendar-layout .calendar-day-details{margin:0;padding:18px;background:#fff;border:1px solid var(--line);border-radius:13px;box-shadow:var(--shadow);align-items:flex-start;align-content:flex-start;flex-direction:column;gap:10px}.calendar-layout .calendar-day-details strong{font-size:15px}.calendar-layout .calendar-day-details>span{width:100%;padding:8px 10px}@media(max-width:900px){.calendar-layout{grid-template-columns:1fr}.calendar-layout .calendar-day-details{min-height:80px}}
