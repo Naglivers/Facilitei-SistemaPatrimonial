@@ -29,11 +29,11 @@ function planCards(info) {
     const current = info?.plan === plan.id;
     const resume = hasOpen && subscription.status === 'pending' && subscription.plan === plan.id;
     const disabled = !info || plan.id === 'free' || (hasOpen && !resume);
-    const label = resume ? 'Continuar pagamento' : current ? (hasOpen || plan.id === 'free' ? 'Plano atual' : 'Assinar novamente') : plan.id === 'free' ? 'Gratuito' : `Assinar ${plan.name}`;
+    const label = resume ? 'Continuar pagamento' : current ? (hasOpen || plan.id === 'free' ? 'Plano atual' : 'Assinar novamente') : plan.id === 'free' ? 'Gratuito' : 'Escolher Pix ou cartão';
     return `<article class="card plan-card ${current ? 'current-plan' : ''}">
       <div class="plan-card-heading"><h3>${plan.name}</h3>${current ? '<span class="pill ok">Seu plano</span>' : ''}</div>
       <p class="plan-description">${plan.description}</p><p class="plan-price">${money(plan.price)}<span>${plan.price ? '/mês' : ' / grátis'}</span></p>
-      <ul><li>${plan.assets}</li><li>${plan.documents}</li><li>Pagamentos e gastos sem limite de quantidade</li></ul>
+      <ul><li>${plan.assets}</li><li>${plan.documents}</li><li>Pagamentos e gastos sem limite de quantidade</li>${plan.price ? '<li>Pix ou cartão, sem precisar de conta Mercado Pago</li>' : ''}</ul>
       <button class="button ${plan.id === 'pro' ? '' : 'secondary'}" type="button" data-subscribe="${plan.id}" ${disabled ? 'disabled' : ''}>${label}</button>
     </article>`;
   }).join('')}</div>`;
@@ -53,7 +53,7 @@ async function renderBilling(target) {
       ${info.asset_limit !== null && info.assets > info.asset_limit ? '<p class="billing-notice">Você tem mais patrimônios que o limite atual. Seus dados continuam disponíveis; escolha um plano maior para cadastrar novos bens.</p>' : ''}
       ${hasOpen && !info.valid_until ? '<p class="billing-notice">O plano pago será liberado após a confirmação da cobrança pelo Mercado Pago. Você pode atualizar o status depois de pagar.</p>' : ''}
       ${planCards(info)}
-      <p class="billing-footnote">Assinaturas mensais em reais, com renovação automática pelo Mercado Pago. Cancele a renovação quando quiser. PDF, PNG e JPEG de até 10 MB por arquivo em todos os planos.</p>
+      <p class="billing-footnote">No checkout do Mercado Pago, escolha Pix ou cartão e continue mesmo sem conta Mercado Pago. Assinaturas mensais em reais; a disponibilidade de cobrança automática depende do meio escolhido. Cancele a renovação quando quiser. PDF, PNG e JPEG de até 10 MB por arquivo em todos os planos.</p>
       ${hasOpen ? '<div class="billing-manage"><p>Para trocar de plano, cancele a assinatura atual e escolha o novo plano. Uma nova assinatura inicia uma cobrança mensal integral, sem crédito automático do período anterior.</p><button class="button secondary small" type="button" data-billing-cancel>Cancelar assinatura</button></div>' : ''}`;
     target.querySelectorAll('[data-subscribe]:not([disabled])').forEach(button => button.onclick = () => startSubscription(button.dataset.subscribe, target));
     target.querySelector('[data-billing-refresh]').onclick = () => updateBilling(target);

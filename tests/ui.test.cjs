@@ -73,10 +73,11 @@ test('planos, tema, mobile, checkout e limites na interface com serviços simula
     assert.equal(profileUpdate.headers?.authorization, 'Bearer mock-access');
     assert.equal(await page.locator('#profile-nav-name').innerText(),'Lucas Pereira');
     await page.getByRole('button', {name:'Configurações',exact:false}).click();
-    await page.getByRole('button', {name:'Assinar Básico',exact:true}).waitFor();
+    await page.getByRole('button', {name:'Escolher Pix ou cartão',exact:true}).first().waitFor();
     assert.equal(await page.locator('.plan-card').count(),3);
     assert.match(await page.locator('.plans-grid').innerText(),/19,99/);
     assert.match(await page.locator('.plans-grid').innerText(),/29,99/);
+    assert.match(await page.locator('.plans-grid').innerText(),/Pix ou cartão/);
     const configRect = await page.locator('.settings-nav').boundingBox();
     const logoutRect = await page.locator('#sign-out-sidebar').boundingBox();
     assert.equal(Math.round(logoutRect.y - configRect.y - configRect.height),10);
@@ -115,7 +116,7 @@ test('planos, tema, mobile, checkout e limites na interface com serviços simula
     assert.equal(upload[4].method,'DELETE');
     assert.equal(await page.getByRole('button',{name:'Enviar arquivo',exact:true}).isEnabled(),true);
     await page.getByRole('button',{name:'Configurações',exact:false}).click();
-    await page.getByRole('button',{name:'Assinar Pro',exact:true}).click();
+    await page.getByRole('button',{name:'Escolher Pix ou cartão',exact:true}).last().click();
     await page.getByRole('heading',{name:'Checkout simulado'}).waitFor();
     const checkout = requests.find(item=>item.path==='/functions/v1/billing' && JSON.parse(item.body).action==='checkout');
     assert.deepEqual(JSON.parse(checkout.body),{action:'checkout',plan:'pro'});
