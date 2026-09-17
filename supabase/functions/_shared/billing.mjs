@@ -13,6 +13,8 @@ export async function requestJSON(url, options = {}) {
     // Nunca enviar tokens, respostas do provedor ou dados pessoais ao navegador/log.
     const error = new BillingError('Não foi possível consultar o serviço de pagamento. Tente novamente.', 502);
     error.upstreamStatus = response.status;
+    // Apenas diagnóstico seguro: sem URL, corpo da resposta, token ou dados pessoais.
+    error.upstream = new URL(url).hostname === 'api.mercadopago.com' ? 'mercadopago' : 'supabase';
     throw error;
   }
   const body = await response.text();

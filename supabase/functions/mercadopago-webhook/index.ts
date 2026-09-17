@@ -31,7 +31,11 @@ Deno.serve(async request => {
     }
     return new Response(JSON.stringify({ received: true }), { headers: { 'Content-Type': 'application/json' } });
   } catch (error) {
-    console.error('billing_webhook_failed', error instanceof BillingError ? error.status : 500);
+    console.error('billing_webhook_failed', {
+      status: error instanceof BillingError ? error.status : 500,
+      upstream: error instanceof BillingError ? error.upstream || null : null,
+      upstreamStatus: error instanceof BillingError ? error.upstreamStatus || null : null,
+    });
     // Só confirmar depois de persistir. Erros temporários recebem nova tentativa.
     return new Response(null, { status: 500 });
   }

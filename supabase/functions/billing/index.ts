@@ -75,7 +75,11 @@ Deno.serve(async request => {
     return new Response(JSON.stringify({ checkout_url: checkoutURL(sub.checkout_url) }), { headers });
   } catch (error) {
     const status = error instanceof BillingError ? error.status : 500;
-    console.error('billing_request_failed', status);
+    console.error('billing_request_failed', {
+      status,
+      upstream: error instanceof BillingError ? error.upstream || null : null,
+      upstreamStatus: error instanceof BillingError ? error.upstreamStatus || null : null,
+    });
     return new Response(JSON.stringify({ error: error instanceof BillingError ? error.message : 'Não foi possível concluir a operação. Tente novamente.' }), { status, headers });
   }
 });
