@@ -19,15 +19,16 @@ Aplicação web leve para gerir imóveis, pagamentos mensais, gastos e documento
 ## Como executar
 
 1. Para desenvolvimento local, crie `config.js` na raiz a partir de `config.example.js`. Para publicar no GitHub Pages, use `config.public.js`.
-2. Preencha a URL do Supabase e uma chave **anon/public** válida. A URL pode ser a raiz (`https://seu-projeto.supabase.co`) ou a URL REST antiga usada no flow (`https://seu-projeto.supabase.co/rest/v1/`); a aplicação aceita ambas.
+2. Preencha a URL do Supabase e uma chave **anon/public** válida. A URL pode ser a raiz (`https://seu-projeto.supabase.co`) ou a URL REST antiga usada no flow (`https://seu-projeto.supabase.co/rest/v1/`); a aplicação aceita ambas. Para ativar o botão oficial do Google, inclua também o Client ID público em `GOOGLE_CLIENT_ID`.
 3. No Supabase, em **Authentication > Providers**, habilite o provedor **Email**. Se a confirmação de e-mail estiver ativada, o usuário precisará confirmar a mensagem recebida antes de fazer login.
-4. Sirva a pasta por um servidor HTTP local. Por exemplo, com a extensão Live Server do VS Code, ou:
+4. Para o Google, crie um cliente OAuth do tipo **Aplicativo da Web**, adicione a URL do site em **Authorized JavaScript origins** e configure o Client ID e o Client Secret em **Authentication > Providers > Google** no Supabase. O botão usa o Google Identity Services e entrega o token de identidade ao Supabase.
+5. Sirva a pasta por um servidor HTTP local. Por exemplo, com a extensão Live Server do VS Code, ou:
 
    ```powershell
    python -m http.server 8080
    ```
 
-5. Abra `http://localhost:8080` no navegador.
+6. Abra `http://localhost:8080` no navegador.
 
 `config.js` está no `.gitignore`, portanto a configuração local não será incluída em commits. `config.public.js` deve conter somente a URL e a chave anon/public para que o GitHub Pages funcione. Nunca use a chave `service_role` no navegador.
 

@@ -4,6 +4,8 @@ const state = { page: 'casas', houses: [], month: currentMonth(), gastos: [], pa
 const app = document.querySelector('#app');
 const shell = document.querySelector('.app-shell');
 const sessionKey = 'sistema-patrimonial-session';
+const googleReturnKey = 'sistema-patrimonial-google-return';
+const appPages = new Set(['casas', 'pagamentos', 'gastos', 'categorias', 'documentos', 'assinaturas', 'contabilidade', 'relatorios', 'perfil', 'configuracoes', 'suporte', 'admin']);
 let sessionExpiryTimer;
 
 document.querySelector('#today').textContent = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'long' }).format(new Date());
@@ -27,6 +29,8 @@ function scheduleSessionExpiry(session) {
   sessionExpiryTimer = setTimeout(endExpiredSession, Math.max(0, expiry - Date.now()));
 }
 function saveSession(session) { state.session = session; localStorage.setItem(sessionKey, JSON.stringify(session)); updateProfileNav(session?.user); scheduleSessionExpiry(session); }
+function googleReturnPage() { return appPages.has(window.location.hash.slice(1)) ? window.location.hash.slice(1) : state.page; }
+async function googleNonce() { const raw = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))); const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(raw)); return [raw, [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')]; }
 function isoMonth(month) { return `${month}-01`; }
 function money(value) { return Number(value || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }); }
 function dateTime(value) {
@@ -456,10 +460,30 @@ function renderAuth(mode = 'login') {
   const registering = mode === 'register';
   const auth = document.createElement('section');
   auth.id = 'auth-screen'; auth.className = 'auth-page';
-  auth.innerHTML = `<div class="auth-card"><div class="auth-brand"><img class="site-logo" src="assets/logo-facilitei.png" alt="Facilitei"> Sistema Patrimonial</div><h1>${registering ? 'Criar conta' : 'Bem-vindo de volta'}</h1><p>${registering ? 'Use seu e-mail para criar o acesso ao sistema.' : 'Entre para acessar sua gestão patrimonial.'}</p><form id="auth-form" class="auth-form"><div class="field"><label>E-mail</label><input name="email" type="email" autocomplete="email" required></div><div class="field"><label>Senha</label><input name="password" type="password" autocomplete="${registering ? 'new-password' : 'current-password'}" minlength="6" required></div>${registering ? '<div class="field"><label>Confirmar senha</label><input name="confirmation" type="password" autocomplete="new-password" minlength="6" required></div>' : ''}<button class="button">${registering ? 'Criar conta' : 'Entrar'}</button></form><p class="auth-switch">${registering ? 'Já possui uma conta?' : 'Ainda não possui uma conta?'} <button id="auth-switch" type="button">${registering ? 'Entrar' : 'Criar conta'}</button></p></div>`;
+  auth.innerHTML = `<div class="auth-card"><div class="auth-brand"><img class="site-logo" src="assets/logo-facilitei.png" alt="Facilitei"> Sistema Patrimonial</div><h1>${registering ? 'Criar conta' : 'Bem-vindo de volta'}</h1><p>${registering ? 'Use seu e-mail para criar o acesso ao sistema.' : 'Entre para acessar sua gestão patrimonial.'}</p><form id="auth-form" class="auth-form"><div class="field"><label>E-mail</label><input name="email" type="email" autocomplete="email" required></div><div class="field"><label>Senha</label><input name="password" type="password" autocomplete="${registering ? 'new-password' : 'current-password'}" minlength="6" required></div>${registering ? '<div class="field"><label>Confirmar senha</label><input name="confirmation" type="password" autocomplete="new-password" minlength="6" required></div>' : ''}<button class="button">${registering ? 'Criar conta' : 'Entrar'}</button></form><div class="auth-divider" aria-hidden="true"><span>ou</span></div><div id="google-sign-in" class="google-sign-in" aria-label="Entrar com Google"></div><p class="auth-switch">${registering ? 'Já possui uma conta?' : 'Ainda não possui uma conta?'} <button id="auth-switch" type="button">${registering ? 'Entrar' : 'Criar conta'}</button></p></div>`;
   document.body.append(auth);
   auth.querySelector('#auth-switch').onclick = () => renderAuth(registering ? 'login' : 'register');
   auth.querySelector('#auth-form').onsubmit = event => submitAuth(event, mode);
+  renderGoogleButton(auth.querySelector('#google-sign-in')).catch(() => { const target = auth.querySelector('#google-sign-in'); if (target) { target.textContent = 'Login com Google indisponível.'; target.classList.add('google-unavailable'); } });
+}
+async function renderGoogleButton(target) {
+  if (!config.GOOGLE_CLIENT_ID) { target.textContent = 'Login com Google indisponível.'; target.classList.add('google-unavailable'); return; }
+  const script = document.querySelector('#google-gsi') || Object.assign(document.createElement('script'), { id: 'google-gsi', src: 'https://accounts.google.com/gsi/client?hl=pt-BR', async: true });
+  if (!script.parentNode) document.head.append(script);
+  await new Promise((resolve, reject) => { if (window.google?.accounts?.id) return resolve(); script.addEventListener('load', resolve, { once: true }); script.addEventListener('error', reject, { once: true }); });
+  if (!target.isConnected) return;
+  const [nonce, hashedNonce] = await googleNonce();
+  window.google.accounts.id.initialize({ client_id: config.GOOGLE_CLIENT_ID, nonce: hashedNonce, callback: response => signInWithGoogle(response, nonce) });
+  window.google.accounts.id.renderButton(target, { theme: 'outline', size: 'large', text: 'continue_with', shape: 'rectangular', width: 360, locale: 'pt-BR' });
+}
+async function signInWithGoogle(response, nonce) {
+  if (!response?.credential) return notify('O Google não retornou uma credencial válida.', true);
+  sessionStorage.setItem(googleReturnKey, googleReturnPage());
+  try {
+    const session = await api('/auth/v1/token?grant_type=id_token', jsonOptions('POST', { provider: 'google', id_token: response.credential, nonce }));
+    if (!session?.access_token) throw new Error('O Supabase não retornou uma sessão válida.');
+    saveSession(session); await openApplication(sessionStorage.getItem(googleReturnKey)); sessionStorage.removeItem(googleReturnKey); notify('Login com Google realizado.');
+  } catch (error) { sessionStorage.removeItem(googleReturnKey); notify(friendlyAuthError(error), true); }
 }
 async function submitAuth(event, mode) {
   event.preventDefault(); const data = Object.fromEntries(new FormData(event.currentTarget));
@@ -472,8 +496,9 @@ async function submitAuth(event, mode) {
     saveSession(response); await openApplication(); notify(mode === 'register' ? 'Conta criada e acesso liberado.' : 'Login realizado.');
   } catch (error) { notify(friendlyAuthError(error), true); }
 }
-async function openApplication() {
+async function openApplication(destinationPage = null) {
   document.querySelector('#auth-screen')?.remove(); shell.classList.remove('hidden'); document.querySelector('#sign-out').classList.remove('hidden');
+  if (appPages.has(destinationPage)) { await goTo(destinationPage); return; }
   const returning = new URLSearchParams(window.location.search).get('billing') === 'return';
   if (returning || window.location.hash === '#configuracoes') {
     if (returning) {
