@@ -1,8 +1,0 @@
-config.js
-supabase/.temp/
-supabase/.branches/
-.env
-.env.*
-!.env.example
-node_modules/
-test-results/
