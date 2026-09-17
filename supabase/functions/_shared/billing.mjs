@@ -109,7 +109,9 @@ export async function syncSubscription(sub, includeInvoices = true) {
     remote = await mp(`/preapproval/${providerId(matches[0].id)}`);
   }
   sub = await saveSubscription(remote, sub);
-  if (!includeInvoices) return sub;
+  // Uma assinatura pendente ainda não possui faturas autorizadas. Consultá-las
+  // nesse estado faz o Mercado Pago responder 400 e impede o cancelamento.
+  if (!includeInvoices || sub.status === 'pending') return sub;
   // Paginação evita perder renovações em assinaturas antigas. Somente ciclos
   // ainda válidos precisam ser relidos; o histórico já confirmado fica no banco.
   for (let offset = 0; offset < 10000; offset += 100) {
