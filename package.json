@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "test": "node --test tests/billing.test.mjs tests/database.test.mjs",
-    "test:ui": "node --test tests/ui.test.cjs"
+    "test:ui": "node --test tests/ui.test.cjs tests/categories.ui.test.cjs tests/responsive.ui.test.cjs"
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.8",

@@ -3,6 +3,39 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { PGlite } from '@electric-sql/pglite';
 
+test('categorias personalizadas: normalização, duplicatas e isolamento entre usuários', async () => {
+  const db = new PGlite();
+  try {
+    await db.exec(`
+      create role anon; create role authenticated;
+      create schema auth;
+      create table auth.users(id uuid primary key);
+      create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
+      grant usage on schema public, auth to authenticated, anon;
+      insert into auth.users values ('00000000-0000-4000-8000-000000000001'), ('00000000-0000-4000-8000-000000000002');
+    `);
+    await db.exec(fs.readFileSync(new URL('../supabase/migrations/202609170013_categorias_personalizadas.sql', import.meta.url), 'utf8'));
+    const user = '00000000-0000-4000-8000-000000000001';
+    const other = '00000000-0000-4000-8000-000000000002';
+    await db.query("select set_config('request.jwt.claim.sub',$1,false)", [user]);
+    await db.exec('set role authenticated');
+    await db.exec("insert into categorias_personalizadas(tipo,nome) values ('expense','  material   escolar  ')");
+    assert.equal((await db.query('select nome from categorias_personalizadas')).rows[0].nome, 'MATERIAL ESCOLAR');
+    await assert.rejects(db.exec("insert into categorias_personalizadas(tipo,nome) values ('expense','Material Escolar')"), /unique constraint/);
+    await assert.rejects(db.exec("insert into categorias_personalizadas(tipo,nome) values ('expense','   ')"), /check constraint/);
+    await assert.rejects(db.exec("insert into categorias_personalizadas(tipo,nome) values ('invalid','Teste')"), /check constraint/);
+    await db.exec("insert into categorias_personalizadas(tipo,nome) values ('income','Material Escolar')");
+    await db.query("select set_config('request.jwt.claim.sub',$1,false)", [other]);
+    assert.equal((await db.query('select * from categorias_personalizadas')).rows.length, 0);
+    await assert.rejects(db.query("insert into categorias_personalizadas(user_id,tipo,nome) values ($1,'expense','Intruso')", [user]), /row-level security/);
+    await db.exec("insert into categorias_personalizadas(tipo,nome) values ('expense','Material Escolar')");
+    assert.equal((await db.query('select * from categorias_personalizadas')).rows.length, 1);
+    await assert.rejects(db.exec("update categorias_personalizadas set nome='Alterada'"), /permission denied/);
+    await db.exec('reset role; set role anon');
+    await assert.rejects(db.exec('select * from categorias_personalizadas'), /permission denied/);
+  } finally { await db.close(); }
+});
+
 test('migração, isolamento, cotas, cobrança e expiração em PostgreSQL', async () => {
   const db = new PGlite();
   try {

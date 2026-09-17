@@ -102,6 +102,11 @@ Não copie para este repositório a chave que estava no export do Node-RED. Revo
 
 ## Estrutura
 
+Para habilitar o cadastro de categorias personalizadas, aplique também a migração
+`supabase/migrations/202609170013_categorias_personalizadas.sql` no Supabase antes de publicar a interface atualizada.
+Na aba Categorias, o botão **Nova categoria** permite cadastrar um nome para receitas ou gastos.
+As categorias ficam disponíveis somente para o usuário que as criou, junto das opções básicas nos dropdowns.
+
 ```text
 index.html          Estrutura da aplicação
 styles.css          Layout responsivo e identidade visual
