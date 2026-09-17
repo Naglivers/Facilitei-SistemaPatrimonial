@@ -162,7 +162,10 @@ function renderSettings() {
         <div><h3 id="dark-mode-label">Modo escuro</h3><p id="dark-mode-description">Use cores escuras em todas as telas. Sua preferência é salva neste navegador.</p></div>
         <button class="theme-toggle" type="button" role="switch" aria-checked="${dark}" aria-labelledby="dark-mode-label" aria-describedby="dark-mode-description"><span class="theme-switch-knob" aria-hidden="true"></span></button>
       </div>
-    </section>`;
+    </section><section id="billing-settings" class="billing-settings" aria-label="Planos e assinatura"><div class="billing-heading"><div><h2>Assinaturas</h2><p>Consulte seu plano atual sem sair das configurações.</p></div><button class="button secondary small" type="button" data-open-subscriptions>Ver assinaturas</button></div><p class="subtitle">Carregando seu plano…</p></section>`;
+  const billingTarget = app.querySelector('#billing-settings');
+  billingTarget.querySelector('[data-open-subscriptions]').onclick = () => goTo('assinaturas');
+  renderBilling(billingTarget);
 }
 function renderSubscriptions() {
   app.innerHTML = heading('Plano', 'Assinaturas', 'Escolha seu plano e acompanhe pagamentos, Pix e renovação.') + '<section id="billing-settings" class="billing-settings" aria-label="Planos e assinatura"><p class="subtitle">Carregando seu plano…</p></section>';
