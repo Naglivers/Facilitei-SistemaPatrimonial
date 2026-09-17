@@ -2,6 +2,7 @@
 // Use somente a chave anon/public (nunca service_role).
 window.APP_CONFIG = {
   SUPABASE_URL: "",
-  SUPABASE_ANON_KEY: ""
+  SUPABASE_ANON_KEY: "",
+  WHATSAPP_NUMBER: "5511999999999"
 };
 

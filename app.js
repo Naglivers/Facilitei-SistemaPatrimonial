@@ -500,7 +500,7 @@ async function uploadDocument(event) {
   if (button.disabled) return;
   const data = new FormData(form);
   const file = data.get('file');
-  if (!file?.size || file.size > 10 * 1024 * 1024 || !['application/pdf','image/png','image/jpeg'].includes(file.type)) return notify('Escolha um PDF, PNG ou JPEG de até 10 MB.', true);
+  if (!file?.size || file.size > 1024 * 1024 * 1024 || !['application/pdf','image/png','image/jpeg'].includes(file.type)) return notify('Escolha um PDF, PNG ou JPEG de até 1 GB.', true);
   const assetId = Number(data.get('patrimonio_id'));
   const path = 'patrimonios/' + assetId + '/' + crypto.randomUUID() + '_' + safeFileName(file.name);
   let reservation;

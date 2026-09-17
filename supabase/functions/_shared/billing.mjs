@@ -1,4 +1,7 @@
 export const PLANS = Object.freeze({ basico: { name: 'Básico', cents: 1999 }, pro: { name: 'Pro', cents: 2999 } });
+export const BILLING_CYCLES = Object.freeze({ mensal: { months: 1, discount: 0 }, trimestral: { months: 3, discount: .10 }, semestral: { months: 6, discount: .15 }, anual: { months: 12, discount: .20 } });
+export function planCents(plan, cycle = 'mensal') { const item = PLANS[plan]; const period = BILLING_CYCLES[cycle]; if (!item || !period) throw new BillingError('Plano ou período inválido.'); return Math.round(item.cents * period.months * (1 - period.discount)); }
+export function cycleMonths(cycle = 'mensal') { if (!BILLING_CYCLES[cycle]) throw new BillingError('Período inválido.'); return BILLING_CYCLES[cycle].months; }
 export class BillingError extends Error {
   constructor(message, status = 400) { super(message); this.status = status; }
 }
@@ -46,15 +49,15 @@ export async function syncPixOrder(sub) {
   const order = await mp(`/v1/orders/${providerId(sub.provider_id)}`);
   const payment = pixPayment(order);
   if (String(order.external_reference) !== sub.id || !PLANS[sub.plan]
-      || Math.round(Number(order.total_amount) * 100) !== PLANS[sub.plan].cents
-      || Math.round(Number(payment.amount) * 100) !== PLANS[sub.plan].cents) {
+      || Math.round(Number(order.total_amount) * 100) !== planCents(sub.plan, sub.billing_cycle)
+      || Math.round(Number(payment.amount) * 100) !== planCents(sub.plan, sub.billing_cycle)) {
     throw new BillingError('Não foi possível validar o Pix.', 502);
   }
   if (payment.status === 'approved') {
     const at = payment.date_approved || payment.date_last_updated || new Date().toISOString();
     await rpc('billing_record_pix_payment', { p_id: sub.id, p_payment: {
       provider_payment_id: providerId(payment.id), invoice_id: providerId(order.id), period_start: at,
-      period_end: nextMonth(at), provider_updated_at: payment.date_last_updated || at,
+      period_end: addMonths(at, cycleMonths(sub.billing_cycle)), provider_updated_at: payment.date_last_updated || at,
     } });
     return { ...sub, status: 'cancelled' };
   }
@@ -77,11 +80,14 @@ export function checkoutURL(value) {
   return url.href;
 }
 export function nextMonth(value) {
+  return addMonths(value, 1);
+}
+export function addMonths(value, months) {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) throw new BillingError('Data de cobrança inválida.', 502);
   const day = date.getUTCDate();
   date.setUTCDate(1);
-  date.setUTCMonth(date.getUTCMonth() + 1);
+  date.setUTCMonth(date.getUTCMonth() + months);
   const last = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
   date.setUTCDate(Math.min(day, last));
   return date.toISOString();
@@ -89,8 +95,8 @@ export function nextMonth(value) {
 export function validateSubscription(remote, local, collector) {
   const recurring = remote.auto_recurring;
   if (String(remote.external_reference) !== local.id || String(remote.collector_id) !== String(collector)
-      || !PLANS[local.plan] || Math.round(Number(recurring?.transaction_amount) * 100) !== PLANS[local.plan].cents
-      || recurring?.currency_id !== 'BRL' || recurring?.frequency !== 1 || recurring?.frequency_type !== 'months'
+      || !PLANS[local.plan] || Math.round(Number(recurring?.transaction_amount) * 100) !== planCents(local.plan, local.billing_cycle)
+      || recurring?.currency_id !== 'BRL' || recurring?.frequency !== cycleMonths(local.billing_cycle) || recurring?.frequency_type !== 'months'
       || !['pending','authorized','paused','cancelled'].includes(remote.status)
       || (local.provider_id && local.provider_id !== String(remote.id))) {
     throw new BillingError('Não foi possível validar a assinatura.', 502);
@@ -112,8 +118,8 @@ export async function localForRemote(remote) {
 export function paymentRecord(invoice, payment, sub, collector) {
   if (String(invoice.preapproval_id) !== sub.provider_id || String(invoice.payment?.id) !== String(payment.id)
       || String(payment.collector_id) !== String(collector) || invoice.currency_id !== 'BRL' || payment.currency_id !== 'BRL'
-      || Math.round(Number(invoice.transaction_amount) * 100) !== PLANS[sub.plan].cents
-      || Math.round(Number(payment.transaction_amount) * 100) !== PLANS[sub.plan].cents) {
+      || Math.round(Number(invoice.transaction_amount) * 100) !== planCents(sub.plan, sub.billing_cycle)
+      || Math.round(Number(payment.transaction_amount) * 100) !== planCents(sub.plan, sub.billing_cycle)) {
     throw new BillingError('Não foi possível validar a cobrança.', 502);
   }
   const start = new Date(invoice.debit_date).toISOString();
@@ -121,7 +127,7 @@ export function paymentRecord(invoice, payment, sub, collector) {
   const status = Number(payment.transaction_amount_refunded || 0) > 0 ? 'refunded' : payment.status;
   if (!payment.date_last_updated || !status) throw new BillingError('Cobrança incompleta.', 502);
   return { provider_payment_id: providerId(payment.id), subscription_id: sub.id, invoice_id: providerId(invoice.id),
-    status, period_start: start, period_end: nextMonth(start), provider_updated_at: payment.date_last_updated };
+    status, period_start: start, period_end: addMonths(start, cycleMonths(sub.billing_cycle)), provider_updated_at: payment.date_last_updated };
 }
 export async function syncInvoice(invoice, sub, suppliedPayment) {
   if (!invoice.payment?.id) return;
@@ -149,7 +155,7 @@ export async function syncSubscription(sub, includeInvoices = true) {
     const page = await mp(`/authorized_payments/search?preapproval_id=${providerId(sub.provider_id)}&limit=100&offset=${offset}`);
     const invoices = page.results || [];
     for (const invoice of invoices) {
-      if (invoice.payment?.id && new Date(nextMonth(invoice.debit_date)).getTime() > Date.now()) await syncInvoice(invoice, sub);
+    if (invoice.payment?.id && new Date(addMonths(invoice.debit_date, cycleMonths(sub.billing_cycle))).getTime() > Date.now()) await syncInvoice(invoice, sub);
     }
     if (offset + invoices.length >= Number(page.paging?.total || invoices.length) || !invoices.length) return sub;
   }

@@ -1,4 +1,4 @@
-import { BillingError, PLANS, env, requestJSON, db, rpc, mp, providerId, checkoutURL, saveSubscription, syncSubscription, syncPixOrder, pixPayment } from '../_shared/billing.mjs';
+import { BillingError, PLANS, BILLING_CYCLES, planCents, cycleMonths, env, requestJSON, db, rpc, mp, providerId, checkoutURL, saveSubscription, syncSubscription, syncPixOrder, pixPayment } from '../_shared/billing.mjs';
 
 Deno.serve(async request => {
   let headers: Record<string,string> = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', Vary: 'Origin' };
@@ -44,9 +44,10 @@ Deno.serve(async request => {
       }
       return new Response(JSON.stringify({ ok: true }), { headers });
     }
-    if (!Object.hasOwn(PLANS, input.plan)) throw new BillingError('Escolha Básico ou Pro.');
+    if (!Object.hasOwn(PLANS, input.plan) || !Object.hasOwn(BILLING_CYCLES, input.cycle || 'mensal')) throw new BillingError('Escolha um plano e período válidos.');
+    const cycle = input.cycle || 'mensal';
     if (input.action === 'pix') {
-      const claim = await rpc('billing_claim_pix', { p_user: user.id, p_plan: input.plan });
+      const claim = await rpc('billing_claim_pix', { p_user: user.id, p_plan: input.plan, p_cycle: cycle });
       let sub = claim.subscription;
       if (!claim.created) {
         sub = sub.provider_type === 'pix' ? await syncPixOrder(sub) : await syncSubscription(sub, false);
@@ -54,8 +55,8 @@ Deno.serve(async request => {
         throw new BillingError('Já existe um pagamento em processamento. Cancele-o antes de escolher outro plano.', 409);
       }
       const remote = await mp('/v1/orders', 'POST', {
-        type: 'online', total_amount: (PLANS[input.plan].cents / 100).toFixed(2), external_reference: sub.id, processing_mode: 'automatic',
-        transactions: { payments: [{ amount: (PLANS[input.plan].cents / 100).toFixed(2), payment_method: { id: 'pix', type: 'bank_transfer' }, expiration_time: 'P1D' }] },
+        type: 'online', total_amount: (planCents(input.plan, cycle) / 100).toFixed(2), external_reference: sub.id, processing_mode: 'automatic',
+        transactions: { payments: [{ amount: (planCents(input.plan, cycle) / 100).toFixed(2), payment_method: { id: 'pix', type: 'bank_transfer' }, expiration_time: 'P1D' }] },
         payer: { email: user.email },
       }, { 'X-Idempotency-Key': crypto.randomUUID() });
       const payment = pixPayment(remote);
@@ -65,16 +66,16 @@ Deno.serve(async request => {
     }
     if (open[0]) {
       const sub = await syncSubscription(open[0]);
-      if (sub.status !== 'cancelled' && (sub.plan !== input.plan || sub.status !== 'pending')) {
+      if (sub.status !== 'cancelled' && (sub.plan !== input.plan || sub.billing_cycle !== cycle || sub.status !== 'pending')) {
         throw new BillingError('Cancele a assinatura atual antes de escolher outro plano. O período já pago será preservado.', 409);
       }
       if (sub.status === 'pending' && sub.checkout_url) return new Response(JSON.stringify({ checkout_url: checkoutURL(sub.checkout_url) }), { headers });
     }
-    const claim = await rpc('billing_claim_checkout', { p_user: user.id, p_plan: input.plan });
+    const claim = await rpc('billing_claim_checkout', { p_user: user.id, p_plan: input.plan, p_cycle: cycle });
     let sub = claim.subscription;
     if (!claim.created) {
       sub = await syncSubscription(sub, false);
-      if (sub.plan === input.plan && sub.status === 'pending' && sub.checkout_url) return new Response(JSON.stringify({ checkout_url: checkoutURL(sub.checkout_url) }), { headers });
+      if (sub.plan === input.plan && sub.billing_cycle === cycle && sub.status === 'pending' && sub.checkout_url) return new Response(JSON.stringify({ checkout_url: checkoutURL(sub.checkout_url) }), { headers });
       throw new BillingError('Já existe uma assinatura em processamento. Atualize o status em instantes.', 409);
     }
     site.searchParams.set('billing', 'return');
@@ -82,8 +83,8 @@ Deno.serve(async request => {
     let remote;
     try {
       remote = await mp('/preapproval', 'POST', {
-        reason: `Facilitei — Plano ${PLANS[input.plan].name} mensal`, external_reference: sub.id, payer_email: user.email,
-        auto_recurring: { frequency: 1, frequency_type: 'months', transaction_amount: PLANS[input.plan].cents / 100, currency_id: 'BRL' },
+        reason: `Facilitei — Plano ${PLANS[input.plan].name} ${cycle}`, external_reference: sub.id, payer_email: user.email,
+        auto_recurring: { frequency: cycleMonths(cycle), frequency_type: 'months', transaction_amount: planCents(input.plan, cycle) / 100, currency_id: 'BRL' },
         back_url: site.href, status: 'pending',
         notification_url: `${env('SUPABASE_URL')}/functions/v1/mercadopago-webhook`,
       });
