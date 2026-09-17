@@ -1,0 +1,15 @@
+/* Ajustes aplicados somente dentro dos aplicativos Android e iPhone. */
+html.native-app body {
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+html.native-app .app-shell {
+  min-height: calc(100vh - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+}
+
+@media (max-width: 760px) {
+  html.native-app .topbar {
+    padding-top: max(1rem, env(safe-area-inset-top));
+  }
+}

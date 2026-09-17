@@ -6,3 +6,4 @@ supabase/.branches/
 !.env.example
 node_modules/
 test-results/
+www/

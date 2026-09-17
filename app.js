@@ -55,7 +55,7 @@ async function api(path, options = {}) {
   const token = isPublicAuth ? config.SUPABASE_ANON_KEY : (state.session?.access_token || config.SUPABASE_ANON_KEY);
   const headers = { apikey: config.SUPABASE_ANON_KEY, Authorization: `Bearer ${token}`, ...options.headers };
   const response = await fetch(`${supabaseBase()}${path}`, { ...options, headers });
-  if (!response.ok) { const text = await response.text(); let message = text; try { const data = JSON.parse(text); message = data.message || data.error || text; } catch { /* Resposta sem JSON. */ } if (response.status === 401 && state.session?.access_token) endExpiredSession(); throw new Error(message || `Erro HTTP ${response.status}`); }
+  if (!response.ok) { const text = await response.text(); let message = text; let data = {}; try { data = JSON.parse(text); message = data.message || data.error || text; } catch { /* Resposta sem JSON. */ } if (response.status === 401 && state.session?.access_token) endExpiredSession(); const error = new Error(message || `Erro HTTP ${response.status}`); error.code = data.error_code || data.code; throw error; }
   if (response.status === 204) return null;
   const text = await response.text();
   return text ? JSON.parse(text) : null;
@@ -65,11 +65,14 @@ function jsonOptions(method, body, extra = {}) { return { method, headers: { 'Co
 function notify(message, error = false) { const element = document.createElement('div'); element.className = `toast${error ? ' error' : ''}`; element.textContent = message; document.querySelector('#toast-region').append(element); setTimeout(() => element.remove(), 4200); }
 function friendlyAuthError(error) {
   let data = {}; try { data = JSON.parse(error.message); } catch { /* A mensagem pode não estar no formato JSON. */ }
-  const code = String(data.error_code || data.code || '').toLowerCase();
+  const code = String(error.code || data.error_code || data.code || '').toLowerCase();
   const message = String(data.msg || data.message || error.message || '').toLowerCase();
   if (code === 'invalid_credentials' || message.includes('invalid login credentials')) return 'E-mail ou senha incorretos.';
   if (code === 'email_not_confirmed' || message.includes('email not confirmed')) return 'Confirme seu e-mail antes de entrar.';
   if (code === 'user_already_exists' || message.includes('already registered') || message.includes('already been registered')) return 'Este e-mail já possui uma conta. Faça login.';
+  if (code === 'provider_disabled' || message.includes('provider is not enabled') || message.includes('provider is disabled')) return 'O login com Google ainda não está ativado no Supabase. Ative o provedor Google em Authentication → Providers.';
+  if (message.includes('audience') || message.includes('client id')) return 'O Client ID do Google não corresponde ao configurado no Supabase. Use o mesmo Client ID nos dois lugares.';
+  if (message.includes('email') && (message.includes('not confirmed') || message.includes('unverified'))) return 'Esta conta já existe, mas o e-mail ainda não foi confirmado. Confirme o e-mail e tente novamente.';
   if (code === 'weak_password' || message.includes('password should be')) return 'A senha precisa atender aos requisitos mínimos do Supabase.';
   if (message.includes('invalid email')) return 'Informe um endereço de e-mail válido.';
   if (message.includes('signup is disabled')) return 'O cadastro de novas contas está desativado no Supabase.';

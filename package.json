@@ -3,11 +3,24 @@
   "private": true,
   "scripts": {
     "test": "node --test tests/billing.test.mjs tests/database.test.mjs",
-    "test:ui": "node --test tests/ui.test.cjs tests/categories.ui.test.cjs tests/responsive.ui.test.cjs"
+    "test:ui": "node --test tests/ui.test.cjs tests/categories.ui.test.cjs tests/responsive.ui.test.cjs",
+    "mobile:build": "node scripts/build-mobile.mjs",
+    "mobile:sync": "npm run mobile:build && npx cap sync",
+    "android:open": "npm run mobile:sync && npx cap open android",
+    "ios:open": "npm run mobile:sync && npx cap open ios"
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.8",
     "playwright": "1.62.1",
     "supabase": "^2.117.0"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.4.3",
+    "@capacitor/app": "^7.0.0",
+    "@capacitor/browser": "^7.0.0",
+    "@capacitor/cli": "^7.6.9",
+    "@capacitor/core": "^7.4.3",
+    "@capacitor/ios": "^7.4.3",
+    "@capacitor/splash-screen": "^7.0.0"
   }
 }
