@@ -28,11 +28,42 @@ export function db(path, method = 'GET', body) {
   });
 }
 export const rpc = (name, body) => db(`rpc/${name}`, 'POST', body);
-export function mp(path, method = 'GET', body) {
+export function mp(path, method = 'GET', body, extraHeaders = {}) {
   return requestJSON(`https://api.mercadopago.com${path}`, {
-    method, headers: { Authorization: `Bearer ${env('MP_ACCESS_TOKEN')}`, 'Content-Type': 'application/json' },
+    method, headers: { Authorization: `Bearer ${env('MP_ACCESS_TOKEN')}`, 'Content-Type': 'application/json', ...extraHeaders },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
+}
+export function pixPayment(order) {
+  const payment = order?.transactions?.payments?.[0];
+  if (!payment || payment.payment_method?.id !== 'pix' || payment.payment_method?.type !== 'bank_transfer') {
+    throw new BillingError('Não foi possível validar o Pix.', 502);
+  }
+  return payment;
+}
+export async function syncPixOrder(sub) {
+  if (!sub.provider_id) return sub;
+  const order = await mp(`/v1/orders/${providerId(sub.provider_id)}`);
+  const payment = pixPayment(order);
+  if (String(order.external_reference) !== sub.id || !PLANS[sub.plan]
+      || Math.round(Number(order.total_amount) * 100) !== PLANS[sub.plan].cents
+      || Math.round(Number(payment.amount) * 100) !== PLANS[sub.plan].cents) {
+    throw new BillingError('Não foi possível validar o Pix.', 502);
+  }
+  if (payment.status === 'approved') {
+    const at = payment.date_approved || payment.date_last_updated || new Date().toISOString();
+    await rpc('billing_record_pix_payment', { p_id: sub.id, p_payment: {
+      provider_payment_id: providerId(payment.id), invoice_id: providerId(order.id), period_start: at,
+      period_end: nextMonth(at), provider_updated_at: payment.date_last_updated || at,
+    } });
+    return { ...sub, status: 'cancelled' };
+  }
+  const status = ['cancelled','canceled','expired','rejected'].includes(payment.status) || ['cancelled','canceled','expired'].includes(order.status) ? 'cancelled' : 'pending';
+  await rpc('billing_record_pix_order', { p_id: sub.id, p_data: {
+    provider_id: providerId(order.id), status, checkout_url: payment.payment_method.ticket_url || sub.checkout_url,
+    provider_updated_at: payment.date_last_updated || order.last_updated || new Date().toISOString(),
+  } });
+  return { ...sub, status };
 }
 export function providerId(value) {
   if (!/^[a-zA-Z0-9_-]{1,100}$/.test(String(value || ''))) throw new BillingError('Identificador inválido.');

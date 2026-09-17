@@ -1,4 +1,4 @@
-import { BillingError, PLANS, env, requestJSON, db, rpc, mp, providerId, checkoutURL, saveSubscription, syncSubscription } from '../_shared/billing.mjs';
+import { BillingError, PLANS, env, requestJSON, db, rpc, mp, providerId, checkoutURL, saveSubscription, syncSubscription, syncPixOrder, pixPayment } from '../_shared/billing.mjs';
 
 Deno.serve(async request => {
   let headers: Record<string,string> = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', Vary: 'Origin' };
@@ -17,18 +17,26 @@ Deno.serve(async request => {
     } catch { throw new BillingError('Entre novamente na sua conta.', 401); }
     if (!user?.id || !user.email) throw new BillingError('Conta inválida.', 401);
     const input = await request.json();
-    if (!['status','checkout','cancel'].includes(input.action)) throw new BillingError('Ação inválida.');
+    if (!['status','checkout','pix','cancel'].includes(input.action)) throw new BillingError('Ação inválida.');
     env('MP_ACCESS_TOKEN'); env('MP_COLLECTOR_ID'); env('MP_WEBHOOK_SECRET');
     const open = await db(`billing_subscriptions?user_id=eq.${user.id}&status=in.(creating,pending,authorized,paused)&limit=1`);
     if (input.action === 'status') {
       const recent = await db(`billing_subscriptions?user_id=eq.${user.id}&status=neq.failed&order=created_at.desc&limit=5`);
-      for (const sub of recent) await syncSubscription(sub);
+      for (const sub of recent) {
+        if (sub.provider_type === 'pix') await syncPixOrder(sub);
+        else await syncSubscription(sub);
+      }
       return new Response(JSON.stringify({ ok: true }), { headers });
     }
     if (input.action === 'cancel') {
       if (open[0]) {
-        const sub = await syncSubscription(open[0]);
+        const sub = open[0].provider_type === 'pix' ? await syncPixOrder(open[0]) : await syncSubscription(open[0]);
         if (!sub.provider_id) throw new BillingError('A criação da assinatura ainda está sendo verificada. Tente novamente em instantes.', 409);
+        if (open[0].provider_type === 'pix') {
+          if (sub.status === 'pending') await mp(`/v1/orders/${providerId(sub.provider_id)}/cancel`, 'POST', undefined, { 'X-Idempotency-Key': crypto.randomUUID() });
+          await rpc('billing_record_pix_order', { p_id: sub.id, p_data: { provider_id: sub.provider_id, status: 'cancelled', checkout_url: null, provider_updated_at: new Date().toISOString() } });
+          return new Response(JSON.stringify({ ok: true }), { headers });
+        }
         if (sub.status !== 'cancelled') {
           const remote = await mp(`/preapproval/${providerId(sub.provider_id)}`, 'PUT', { status: 'cancelled' });
           await saveSubscription(remote, sub);
@@ -37,6 +45,24 @@ Deno.serve(async request => {
       return new Response(JSON.stringify({ ok: true }), { headers });
     }
     if (!Object.hasOwn(PLANS, input.plan)) throw new BillingError('Escolha Básico ou Pro.');
+    if (input.action === 'pix') {
+      const claim = await rpc('billing_claim_pix', { p_user: user.id, p_plan: input.plan });
+      let sub = claim.subscription;
+      if (!claim.created) {
+        sub = sub.provider_type === 'pix' ? await syncPixOrder(sub) : await syncSubscription(sub, false);
+        if (sub.provider_type === 'pix' && sub.status === 'pending' && sub.checkout_url) return new Response(JSON.stringify({ pix_url: checkoutURL(sub.checkout_url) }), { headers });
+        throw new BillingError('Já existe um pagamento em processamento. Cancele-o antes de escolher outro plano.', 409);
+      }
+      const remote = await mp('/v1/orders', 'POST', {
+        type: 'online', total_amount: (PLANS[input.plan].cents / 100).toFixed(2), external_reference: sub.id, processing_mode: 'automatic',
+        transactions: { payments: [{ amount: (PLANS[input.plan].cents / 100).toFixed(2), payment_method: { id: 'pix', type: 'bank_transfer' }, expiration_time: 'P1D' }] },
+        payer: { email: user.email },
+      }, { 'X-Idempotency-Key': crypto.randomUUID() });
+      const payment = pixPayment(remote);
+      const url = checkoutURL(payment.payment_method.ticket_url);
+      await rpc('billing_record_pix_order', { p_id: sub.id, p_data: { provider_id: providerId(remote.id), status: 'pending', checkout_url: url, provider_updated_at: new Date().toISOString() } });
+      return new Response(JSON.stringify({ pix_url: url }), { headers });
+    }
     if (open[0]) {
       const sub = await syncSubscription(open[0]);
       if (sub.status !== 'cancelled' && (sub.plan !== input.plan || sub.status !== 'pending')) {

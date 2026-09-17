@@ -1,4 +1,4 @@
-import { BillingError, env, db, mp, providerId, verifyWebhook, localForRemote, saveSubscription, syncInvoice } from '../_shared/billing.mjs';
+import { BillingError, env, db, mp, providerId, verifyWebhook, localForRemote, saveSubscription, syncInvoice, syncPixOrder } from '../_shared/billing.mjs';
 
 Deno.serve(async request => {
   try {
@@ -7,7 +7,11 @@ Deno.serve(async request => {
     const body = await request.json();
     const id = providerId(new URL(request.url).searchParams.get('data.id'));
     if (String(body.data?.id).toLowerCase() !== id.toLowerCase()) return new Response(null, { status: 400 });
-    if (body.type === 'subscription_preapproval') {
+    if (body.type === 'order') {
+      const order = await mp(`/v1/orders/${id}`);
+      const local = await localForRemote(order);
+      if (local?.provider_type === 'pix') await syncPixOrder(local);
+    } else if (body.type === 'subscription_preapproval') {
       const remote = await mp(`/preapproval/${id}`);
       const local = await localForRemote(remote);
       if (local) await saveSubscription(remote, local);
