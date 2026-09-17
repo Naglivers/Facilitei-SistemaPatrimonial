@@ -4,17 +4,12 @@ Este arquivo guarda as dez melhorias priorizadas para o Sistema Patrimonial.
 
 ## Roadmap de amanhã — 18/09/2026
 
-1. **Login automático com Google**
-   - Configurar o provedor Google no Supabase Authentication.
-   - Adicionar o botão “Continuar com Google” nas telas de acesso.
-   - Retornar o usuário para o sistema após autenticar, preservando a página de origem.
-
-2. **E-mail de confirmação de conta**
+1. **E-mail de confirmação de conta**
    - Revisar o modelo de e-mail enviado pelo Supabase ao criar uma conta.
    - Personalizar assunto, identidade visual, texto de boas-vindas e link de confirmação para o site publicado.
    - Testar cadastro, confirmação e primeiro acesso em produção.
 
-3. **Compartilhamento de patrimônio entre usuários**
+2. **Compartilhamento de patrimônio entre usuários**
    - Criar convites por e-mail para um patrimônio específico.
    - Definir permissões de visualização e edição para cada convidado.
    - Atualizar as regras de segurança do Supabase para que receitas, gastos e documentos respeitem o acesso compartilhado.

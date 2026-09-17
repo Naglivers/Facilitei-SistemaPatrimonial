@@ -4,9 +4,10 @@ O sistema oferece assinaturas mensais pelo Mercado Pago:
 
 | Plano | Mensalidade | Patrimônios | Documentos |
 | --- | ---: | --- | --- |
-| Free | R$ 0,00 | 1 | 5 no total da conta |
-| Básico | R$ 19,99 | 3 | 5 por patrimônio |
-| Pro | R$ 29,99 | Ilimitados | Ilimitados |
+| Free | R$ 0,00 | 1 | Até 10 MB de arquivos |
+| Básico | R$ 19,99 | Até 3 | Até 100 MB de arquivos |
+| Pro | R$ 29,99 | Até 15 | Até 1 GB de arquivos |
+| Infinite | Sob consulta | Ilimitados | Ilimitados |
 
 Os limites são impostos no banco de dados. A tela apenas mostra o uso e evita tentativas desnecessárias. Assim, abrir várias abas ou alterar o código no navegador não permite ultrapassar a cota.
 

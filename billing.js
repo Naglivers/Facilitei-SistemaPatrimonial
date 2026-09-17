@@ -1,15 +1,16 @@
 /* Os limites exibidos aqui são informativos; o banco é a autoridade. */
 const BILLING_PLANS = [
-  { id: 'free', name: 'Free', price: 0, assets: '1 patrimônio', documents: '5 documentos no total', description: 'Para começar a organizar seus bens.' },
+  { id: 'free', name: 'Free', price: 0, assets: '1 patrimônio', documents: 'Até 10 MB de arquivos', description: 'Para começar a organizar seus bens.' },
   { id: 'basico', name: 'Básico', price: 19.99, assets: 'Até 3 patrimônios', documents: 'Até 100 MB de arquivos', description: 'Mais espaço para acompanhar sua carteira.' },
   { id: 'pro', name: 'Pro', price: 29.99, assets: 'Até 15 patrimônios', documents: 'Até 1 GB de arquivos', description: 'Mais capacidade para sua gestão patrimonial.' },
-  { id: 'infinite', name: 'Infinite', price: null, assets: 'Limites personalizados', documents: 'Armazenamento personalizado', description: 'Para operações que precisam de uma estrutura sob medida.' },
+  { id: 'infinite', name: 'Infinite', price: null, assets: 'Patrimônios ilimitados', documents: 'Arquivos ilimitados', description: 'Para operações que precisam de uma estrutura sob medida.' },
 ];
 let billingBusy = false;
 let billingCycle = 'mensal';
 const BILLING_CYCLES = { mensal: { label: 'Mensal', months: 1, discount: 0 }, trimestral: { label: 'Trimestral', months: 3, discount: .10 }, semestral: { label: 'Semestral', months: 6, discount: .15 }, anual: { label: 'Anual', months: 12, discount: .20 } };
 function cyclePrice(plan) { const cycle = BILLING_CYCLES[billingCycle]; return Math.round(plan.price * cycle.months * (1 - cycle.discount) * 100) / 100; }
 function infiniteWhatsAppLink() { const number = String(window.APP_CONFIG?.WHATSAPP_NUMBER || '').replace(/\D/g, ''); return number ? `https://wa.me/${number}?text=${encodeURIComponent('Olá! Quero conhecer o plano Infinite do Facilitei.')}` : '#'; }
+function storageLabel(bytes) { if (bytes == null) return 'ilimitado'; if (bytes >= 1073741824) return `${(bytes / 1073741824).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} GB`; return `${Math.round(bytes / 1048576)} MB`; }
 
 async function readPlan() {
   try { return await api('/rest/v1/rpc/my_plan', jsonOptions('POST', {})); }
@@ -56,12 +57,12 @@ async function renderBilling(target) {
     target.innerHTML = `<div class="billing-heading"><div><h2>Planos e assinatura</h2><p>Escolha o espaço que acompanha seu patrimônio.</p></div><button class="button secondary small" type="button" data-billing-refresh>Atualizar status</button></div>
       <div class="card plan-usage" aria-live="polite"><div><span>Plano atual</span><strong>${plan.name}</strong><small>${esc(statusLabels[subscription?.status] || 'Sem mensalidade')}${info.valid_until ? ` · Acesso pago até ${dateTime(info.valid_until)}` : ''}</small></div>
       <div><span>Patrimônios</span><strong>${info.assets} / ${info.asset_limit ?? 'ilimitados'}</strong></div>
-      <div><span>Documentos</span><strong>${info.documents}${info.plan === 'free' ? ' / 5' : ''}</strong><small>${info.plan === 'basico' ? 'Limite de 5 por patrimônio' : info.plan === 'pro' ? 'Sem limite de quantidade' : 'No total da conta'}</small></div></div>
+      <div><span>Arquivos</span><strong>${storageLabel(info.storage_bytes || 0)} / ${storageLabel(info.storage_limit)}</strong><small>Espaço usado pela conta</small></div></div>
       ${info.asset_limit !== null && info.assets > info.asset_limit ? '<p class="billing-notice">Você tem mais patrimônios que o limite atual. Seus dados continuam disponíveis; escolha um plano maior para cadastrar novos bens.</p>' : ''}
       ${hasOpen && !info.valid_until ? '<p class="billing-notice">O plano pago será liberado após a confirmação da cobrança pelo Mercado Pago. Você pode atualizar o status depois de pagar.</p>' : ''}
       <div class="billing-cycles" role="group" aria-label="Período de cobrança">${Object.entries(BILLING_CYCLES).map(([id, cycle]) => `<button class="${billingCycle === id ? 'active' : ''}" type="button" data-billing-cycle="${id}">${cycle.label}${cycle.discount ? ` · -${Math.round(cycle.discount * 100)}%` : ''}</button>`).join('')}</div>
       ${planCards(info)}
-      <p class="billing-footnote">No checkout do Mercado Pago, escolha Pix ou cartão e continue mesmo sem conta Mercado Pago. Assinaturas mensais em reais; a disponibilidade de cobrança automática depende do meio escolhido. Cancele a renovação quando quiser. PDF, PNG e JPEG de até 10 MB por arquivo em todos os planos.</p>
+      <p class="billing-footnote">No checkout do Mercado Pago, escolha Pix ou cartão e continue mesmo sem conta Mercado Pago. Assinaturas mensais em reais; a disponibilidade de cobrança automática depende do meio escolhido. Cancele a renovação quando quiser. O espaço de arquivos é compartilhado por todos os patrimônios da conta.</p>
       ${hasOpen ? '<div class="billing-manage"><p>Para trocar de plano, cancele a assinatura atual e escolha o novo plano. Uma nova assinatura inicia uma cobrança mensal integral, sem crédito automático do período anterior.</p><button class="button secondary small" type="button" data-billing-cancel>Cancelar assinatura</button></div>' : ''}`;
     target.querySelectorAll('[data-subscribe]:not([disabled])').forEach(button => button.onclick = () => startSubscription(button.dataset.subscribe, target, billingCycle));
     target.querySelectorAll('[data-pix]:not([disabled])').forEach(button => button.onclick = () => startPix(button.dataset.pix, target, billingCycle));
@@ -117,12 +118,8 @@ function cancelSubscription(target) {
 }
 async function checkPlanQuota(kind, assetId) {
   const info = await readPlan();
-  const assetLimit = info.plan === 'pro' ? 15 : info.asset_limit;
+  const assetLimit = info.asset_limit;
   if (kind === 'asset' && assetLimit !== null && info.assets >= assetLimit) {
     throw new Error('Limite de patrimônios atingido. Acesse Configurações → Planos e assinatura para aumentar seu limite.');
-  }
-  const documents = info.plan === 'free' ? info.documents : Number(info.documents_by_asset[String(assetId)] || 0);
-  if (kind === 'document' && info.document_limit !== null && documents >= info.document_limit) {
-    throw new Error('Limite de documentos atingido. Acesse Configurações → Planos e assinatura para aumentar seu limite.');
   }
 }
