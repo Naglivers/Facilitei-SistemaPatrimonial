@@ -108,3 +108,4 @@
 @media(max-width:1000px){.plans-grid{grid-template-columns:1fr}.plan-description{min-height:0}.plan-usage{grid-template-columns:1fr 1fr}.plan-usage>div:first-child{grid-column:1/-1}}
 @media(max-width:600px){.billing-heading,.billing-manage{align-items:flex-start;flex-direction:column}.plan-card{padding:20px}.plan-usage{padding:18px;gap:16px}}
 @media(max-width:800px){.profile-layout,.profile-form{grid-template-columns:1fr}.profile-plan .button{grid-column:auto;grid-row:auto;justify-self:start;margin-top:5px}.profile-actions{justify-content:stretch}.profile-actions .button{width:100%}.profile-nav{padding-bottom:23px!important}}
+.accounting-card{max-width:960px;padding:25px}.accounting-form{display:grid;gap:24px}.accounting-section{padding-bottom:23px;border-bottom:1px solid var(--line)}.accounting-section:last-of-type{padding-bottom:0;border-bottom:0}.accounting-section h3{margin:0 0 15px;font-size:15px}.accounting-summary .metric strong{font-size:18px}

@@ -68,12 +68,14 @@ async function goTo(page) {
   state.page = page;
   document.querySelectorAll('.nav-link').forEach(b => b.classList.toggle('active', b.dataset.page === page));
   document.querySelector('.sidebar').classList.remove('open');
-  document.querySelector('#breadcrumb').textContent = page === 'configuracoes' ? 'Configurações' : page === 'perfil' ? 'Meu perfil' : page[0].toUpperCase() + page.slice(1);
+  document.querySelector('#breadcrumb').textContent = page === 'configuracoes' ? 'Configurações' : page === 'perfil' ? 'Meu perfil' : page === 'assinaturas' ? 'Assinaturas' : page === 'contabilidade' ? 'Contabilidade' : page[0].toUpperCase() + page.slice(1);
   await refresh();
 }
 async function refresh() {
   if (state.page === 'perfil') { await renderProfile(); return; }
   if (state.page === 'configuracoes') { renderSettings(); return; }
+  if (state.page === 'assinaturas') { renderSubscriptions(); return; }
+  if (state.page === 'contabilidade') { await renderAccounting(); return; }
   try { setLoading(); if (state.page === 'casas') await loadCasas(); if (state.page === 'pagamentos') await loadPagamentos(); if (state.page === 'gastos') await loadGastos(); if (state.page === 'documentos') await loadDocumentos(); }
   catch (error) { showError(error); }
 }
@@ -124,7 +126,7 @@ async function renderProfile() {
         </form>
       </section>`;
     app.querySelector('#profile-form').onsubmit = event => updateProfile(event, user);
-    app.querySelector('[data-open-plans]').onclick = () => goTo('configuracoes');
+    app.querySelector('[data-open-plans]').onclick = () => goTo('assinaturas');
   } catch (error) { showError(error); }
 }
 async function updateProfile(event, user) {
@@ -160,8 +162,31 @@ function renderSettings() {
         <div><h3 id="dark-mode-label">Modo escuro</h3><p id="dark-mode-description">Use cores escuras em todas as telas. Sua preferência é salva neste navegador.</p></div>
         <button class="theme-toggle" type="button" role="switch" aria-checked="${dark}" aria-labelledby="dark-mode-label" aria-describedby="dark-mode-description"><span class="theme-switch-knob" aria-hidden="true"></span></button>
       </div>
-    </section><section id="billing-settings" class="billing-settings" aria-label="Planos e assinatura"><p class="subtitle">Carregando seu plano…</p></section>`;
+    </section>`;
+}
+function renderSubscriptions() {
+  app.innerHTML = heading('Plano', 'Assinaturas', 'Escolha seu plano e acompanhe pagamentos, Pix e renovação.') + '<section id="billing-settings" class="billing-settings" aria-label="Planos e assinatura"><p class="subtitle">Carregando seu plano…</p></section>';
   renderBilling(app.querySelector('#billing-settings'));
+}
+async function renderAccounting() {
+  setLoading('Carregando dados para a contabilidade…');
+  try {
+    const rows = await api(rest('contabilidade_perfil', 'select=*&limit=1'));
+    const data = rows[0] || {};
+    app.innerHTML = heading('Organização fiscal', 'Contabilidade', 'Mantenha os dados essenciais prontos para compartilhar com seu contador.') + `
+      <section class="summary accounting-summary"><article class="card metric"><span>Cadastro fiscal</span><strong>${data.razao_social ? 'Preenchido' : 'Pendente'}</strong></article><article class="card metric"><span>Regime tributário</span><strong>${esc(data.regime_tributario || 'Não informado')}</strong></article><article class="card metric"><span>Contato contábil</span><strong>${data.contador_nome ? 'Cadastrado' : 'Pendente'}</strong></article></section>
+      <section class="card accounting-card"><div class="profile-card-head"><h2>Dados para o contador</h2><p>Informe somente dados do titular ou da empresa. Eles ficam privados na sua conta.</p></div>
+      <form id="accounting-form" class="accounting-form"><div class="accounting-section"><h3>Identificação fiscal</h3><div class="form-grid two"><div class="field"><label>Nome ou razão social *</label><input name="razao_social" maxlength="180" required value="${esc(data.razao_social || '')}"></div><div class="field"><label>CPF ou CNPJ *</label><input name="documento_fiscal" inputmode="numeric" maxlength="18" required value="${esc(data.documento_fiscal || '')}"></div><div class="field"><label>Regime tributário</label><select name="regime_tributario"><option value="">Selecione</option>${['Pessoa física','MEI','Simples Nacional','Lucro Presumido','Lucro Real'].map(value => `<option ${data.regime_tributario === value ? 'selected' : ''}>${value}</option>`).join('')}</select></div><div class="field"><label>Inscrição municipal/estadual</label><input name="inscricao" maxlength="60" value="${esc(data.inscricao || '')}"></div></div></div>
+      <div class="accounting-section"><h3>Endereço fiscal</h3><div class="form-grid"><div class="field"><label>CEP</label><input name="cep" inputmode="numeric" maxlength="9" value="${esc(data.cep || '')}"></div><div class="field"><label>Logradouro</label><input name="logradouro" maxlength="160" value="${esc(data.logradouro || '')}"></div><div class="field"><label>Número</label><input name="numero" maxlength="20" value="${esc(data.numero || '')}"></div><div class="field"><label>Cidade / UF</label><input name="cidade_uf" maxlength="100" value="${esc(data.cidade_uf || '')}"></div></div></div>
+      <div class="accounting-section"><h3>Contato da contabilidade</h3><div class="form-grid two"><div class="field"><label>Nome do contador ou escritório</label><input name="contador_nome" maxlength="160" value="${esc(data.contador_nome || '')}"></div><div class="field"><label>E-mail do contador</label><input name="contador_email" type="email" maxlength="254" value="${esc(data.contador_email || '')}"></div><div class="field"><label>Telefone</label><input name="contador_telefone" inputmode="tel" maxlength="30" value="${esc(data.contador_telefone || '')}"></div><div class="field"><label>Observações</label><input name="observacoes" maxlength="500" value="${esc(data.observacoes || '')}"></div></div></div><div class="profile-actions"><button class="button" type="submit">Salvar dados contábeis</button></div></form></section>`;
+    app.querySelector('#accounting-form').onsubmit = saveAccounting;
+  } catch (error) { showError(new Error('A tabela de contabilidade ainda não foi criada. Rode a query que vou te enviar depois desta tela.')); }
+}
+async function saveAccounting(event) {
+  event.preventDefault(); const form = event.currentTarget; const data = Object.fromEntries(new FormData(form));
+  const payload = Object.fromEntries(Object.entries(data).map(([key, value]) => [key, String(value).trim() || null]));
+  try { await api(rest('contabilidade_perfil'), jsonOptions('POST', payload, { Prefer: 'resolution=merge-duplicates,return=minimal' })); notify('Dados contábeis salvos.'); await renderAccounting(); }
+  catch (error) { notify(error.message, true); }
 }
 async function fetchHouses() { state.houses = await api(rest('casa', 'select=id,created_at,rua,numero,valor_casa,complemento&order=id.desc')); return state.houses; }
 
