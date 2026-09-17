@@ -4,6 +4,7 @@ const state = { page: 'casas', houses: [], month: currentMonth(), gastos: [], pa
 const app = document.querySelector('#app');
 const shell = document.querySelector('.app-shell');
 const sessionKey = 'sistema-patrimonial-session';
+let sessionExpiryTimer;
 
 document.querySelector('#today').textContent = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'long' }).format(new Date());
 document.querySelector('.menu-toggle').addEventListener('click', () => document.querySelector('.sidebar').classList.toggle('open'));
@@ -14,7 +15,18 @@ updateProfileNav();
 
 function currentMonth() { return new Date().toISOString().slice(0, 7); }
 function readSession() { try { return JSON.parse(localStorage.getItem('sistema-patrimonial-session')) || null; } catch { return null; } }
-function saveSession(session) { state.session = session; localStorage.setItem(sessionKey, JSON.stringify(session)); updateProfileNav(session?.user); }
+function jwtExpiry(session) {
+  if (Number(session?.expires_at)) return Number(session.expires_at) * 1000;
+  try { const payload = JSON.parse(atob(String(session?.access_token || '').split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))); return Number(payload.exp || 0) * 1000; } catch { return 0; }
+}
+function endExpiredSession() {
+  clearTimeout(sessionExpiryTimer); localStorage.removeItem(sessionKey); state.session = null; renderAuth(); notify('Sua sessão expirou. Entre novamente para continuar.', true);
+}
+function scheduleSessionExpiry(session) {
+  clearTimeout(sessionExpiryTimer); const expiry = jwtExpiry(session); if (!expiry) return;
+  sessionExpiryTimer = setTimeout(endExpiredSession, Math.max(0, expiry - Date.now()));
+}
+function saveSession(session) { state.session = session; localStorage.setItem(sessionKey, JSON.stringify(session)); updateProfileNav(session?.user); scheduleSessionExpiry(session); }
 function isoMonth(month) { return `${month}-01`; }
 function money(value) { return Number(value || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }); }
 function dateTime(value) {
@@ -39,7 +51,7 @@ async function api(path, options = {}) {
   const token = isPublicAuth ? config.SUPABASE_ANON_KEY : (state.session?.access_token || config.SUPABASE_ANON_KEY);
   const headers = { apikey: config.SUPABASE_ANON_KEY, Authorization: `Bearer ${token}`, ...options.headers };
   const response = await fetch(`${supabaseBase()}${path}`, { ...options, headers });
-  if (!response.ok) { const text = await response.text(); let message = text; try { const data = JSON.parse(text); message = data.message || data.error || text; } catch { /* Resposta sem JSON. */ } throw new Error(message || `Erro HTTP ${response.status}`); }
+  if (!response.ok) { const text = await response.text(); let message = text; try { const data = JSON.parse(text); message = data.message || data.error || text; } catch { /* Resposta sem JSON. */ } if (response.status === 401 && state.session?.access_token) endExpiredSession(); throw new Error(message || `Erro HTTP ${response.status}`); }
   if (response.status === 204) return null;
   const text = await response.text();
   return text ? JSON.parse(text) : null;
@@ -68,15 +80,20 @@ async function goTo(page) {
   state.page = page;
   document.querySelectorAll('.nav-link').forEach(b => b.classList.toggle('active', b.dataset.page === page));
   document.querySelector('.sidebar').classList.remove('open');
-  document.querySelector('#breadcrumb').textContent = page === 'configuracoes' ? 'Configurações' : page === 'perfil' ? 'Meu perfil' : page === 'assinaturas' ? 'Assinaturas' : page === 'contabilidade' ? 'Contabilidade' : page[0].toUpperCase() + page.slice(1);
+  document.querySelector('#breadcrumb').textContent = page === 'configuracoes' ? 'Configurações' : page === 'perfil' ? 'Meu perfil' : page === 'assinaturas' ? 'Assinaturas' : page === 'contabilidade' ? 'Contabilidade' : page === 'relatorios' ? 'Relatórios' : page[0].toUpperCase() + page.slice(1);
   await refresh();
 }
 async function refresh() {
+  document.documentElement.dataset.page = state.page;
   if (state.page === 'perfil') { await renderProfile(); return; }
+  if (state.page === 'suporte') { await renderSupport(); return; }
+  if (state.page === 'admin') { await renderAdminTickets(); return; }
   if (state.page === 'configuracoes') { renderSettings(); return; }
   if (state.page === 'assinaturas') { renderSubscriptions(); return; }
   if (state.page === 'contabilidade') { await renderAccounting(); return; }
-  try { setLoading(); if (state.page === 'casas') await loadCasas(); if (state.page === 'pagamentos') await loadPagamentos(); if (state.page === 'gastos') await loadGastos(); if (state.page === 'documentos') await loadDocumentos(); }
+  if (state.page === 'relatorios') { await renderReports(); return; }
+  if (state.page === 'categorias') { await renderCategories(); return; }
+  try { setLoading(); if (state.page === 'casas') { await loadCasas(); await appendPortfolioMetrics(); } if (state.page === 'pagamentos') await loadPagamentos(); if (state.page === 'gastos') { await loadGastos(); promoteFormToModal('#expense-form', 'Cadastrar gasto', 'add-expense', createExpense); await enhanceExpensePaymentDates(); } if (state.page === 'documentos') { await loadDocumentos(); promoteFormToModal('#document-form', 'Enviar documento', 'add-document', uploadDocument); } }
   catch (error) { showError(error); }
 }
 function profileName(user) {
@@ -94,6 +111,9 @@ function updateProfileNav(user = state.session?.user) {
   if (avatar) avatar.textContent = profileInitials(name);
   if (navName) navName.textContent = name;
   if (navEmail) navEmail.textContent = user?.email || 'Conta e assinatura';
+  const adminNav = document.querySelector('.admin-nav');
+  const isAdminEmail = String(user?.email || '').trim().toLowerCase() === 'lucasventura06@gmail.com';
+  adminNav?.classList.toggle('hidden', !isAdminEmail);
 }
 async function getCurrentUser() {
   const user = await api('/auth/v1/user');
@@ -167,6 +187,61 @@ function renderSettings() {
   billingTarget.querySelector('[data-open-subscriptions]').onclick = () => goTo('assinaturas');
   renderBilling(billingTarget);
 }
+async function renderSupport() {
+  const number = String(window.APP_CONFIG?.WHATSAPP_NUMBER || '').replace(/\D/g, '');
+  const message = encodeURIComponent('Olá! Preciso de ajuda com o Sistema Patrimonial.');
+  const whatsappUrl = number ? `https://wa.me/${number}?text=${message}` : '';
+  try {
+    const tickets = await api(rest('support_tickets', 'select=id,assunto,categoria,mensagem,status,created_at,updated_at&order=created_at.desc'));
+    const ticketStatus = { aberto: 'Aberto', em_andamento: 'Em andamento', resolvido: 'Resolvido', fechado: 'Fechado' };
+    app.innerHTML = heading('Atendimento', 'Suporte', 'Encontre orientações rápidas, fale conosco ou abra um ticket.') + `<section class="card support-hero"><div><p class="eyebrow">Precisa de ajuda?</p><h2>Fale com o suporte pelo WhatsApp</h2><p>Envie sua dúvida e informe, se possível, a tela em que ela aconteceu.</p></div>${whatsappUrl ? `<a class="button" href="${whatsappUrl}" target="_blank" rel="noopener">Abrir WhatsApp</a>` : '<span class="detail-empty">WhatsApp de suporte não configurado.</span>'}</section><section class="support-grid"><article class="card support-card"><h2>Patrimônios</h2><p>Cadastre casas, veículos e outros bens. Os detalhes de cada tipo aparecem no próprio formulário.</p></article><article class="card support-card"><h2>Receitas e gastos</h2><p>Use os lembretes e o calendário para receber ou pagar lançamentos pendentes.</p></article><article class="card support-card"><h2>Documentos e fotos</h2><p>Envie arquivos e imagens pelo patrimônio para manter tudo organizado no mesmo lugar.</p></article></section><section class="support-ticket-layout"><section class="card support-ticket-form"><h2>Abrir ticket</h2><p>Descreva sua dúvida ou problema para receber atendimento.</p><form id="support-ticket-form"><div class="field"><label>Assunto *</label><input name="assunto" maxlength="160" required placeholder="Ex.: Não consigo enviar um documento"></div><div class="field"><label>Categoria *</label><select name="categoria"><option value="geral">Dúvida geral</option><option value="conta">Conta e acesso</option><option value="pagamentos">Pagamentos e planos</option><option value="patrimonios">Patrimônios</option><option value="documentos">Documentos e fotos</option><option value="erro">Erro no sistema</option></select></div><div class="field"><label>Mensagem *</label><textarea name="mensagem" minlength="10" maxlength="4000" required placeholder="Conte o que aconteceu e em qual tela."></textarea></div><div class="modal-actions"><button class="button">Enviar ticket</button></div></form></section><section class="card support-ticket-list"><div class="table-head"><h2>Meus tickets</h2><button id="reload-tickets" class="button secondary small" type="button">Atualizar</button></div>${tickets.length ? `<div class="ticket-list">${tickets.map(ticket => `<article class="ticket-item"><div><span class="pill ticket-${esc(ticket.status)}">${esc(ticketStatus[ticket.status] || ticket.status)}</span><h3>#${ticket.id} · ${esc(ticket.assunto)}</h3><small>${dateTime(ticket.created_at)} · ${esc(ticket.categoria)}</small><p>${esc(ticket.mensagem)}</p></div></article>`).join('')}</div>` : '<p class="empty">Você ainda não abriu nenhum ticket.</p>'}</section></section>`;
+    app.querySelectorAll('.ticket-item h3').forEach(title => { title.textContent = title.textContent.replace(/^#\d+\s*·\s*/, ''); });
+    app.querySelector('#reload-tickets').onclick = renderSupport;
+    app.querySelectorAll('.ticket-item').forEach((item, index) => {
+      const open = () => openSupportTicket(tickets[index], ticketStatus);
+      item.setAttribute('role', 'button'); item.tabIndex = 0; item.onclick = open;
+      item.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(); } };
+    });
+    const ticketFormCard = app.querySelector('.support-ticket-form'); const ticketFormMarkup = ticketFormCard?.innerHTML; ticketFormCard?.remove();
+    app.querySelector('.page-heading')?.insertAdjacentHTML('beforeend', '<button id="open-support-ticket" class="button" type="button">Abrir ticket</button>');
+    app.querySelector('#open-support-ticket').onclick = () => {
+      const modal = document.createElement('div'); modal.className = 'modal-backdrop'; modal.id = 'support-ticket-modal';
+      modal.innerHTML = `<section class="modal property-modal support-ticket-modal"><button class="modal-close" type="button" aria-label="Fechar">×</button>${ticketFormMarkup}</section>`;
+      document.body.append(modal); modal.querySelector('#support-ticket-form').onsubmit = createSupportTicket; modal.querySelector('.modal-close').onclick = () => modal.remove();
+    };
+  } catch (error) { app.innerHTML = heading('Atendimento', 'Suporte', 'Abra uma solicitação e acompanhe o atendimento por aqui.') + `<section class="card empty"><h2>Central de tickets aguardando configuração</h2><p>Rode a query de tickets no Supabase para ativar esta tela.</p></section>`; }
+}
+async function createSupportTicket(event) {
+  event.preventDefault(); const form = event.currentTarget; const button = form.querySelector('.button'); const data = Object.fromEntries(new FormData(form));
+  button.disabled = true;
+  try { await api(rest('support_tickets'), jsonOptions('POST', { assunto: data.assunto.trim(), categoria: data.categoria, mensagem: data.mensagem.trim() }, { Prefer: 'return=minimal' })); notify('Ticket enviado. Você poderá acompanhar o status nesta aba.'); await renderSupport(); }
+  catch (error) { notify(error.message, true); } finally { button.disabled = false; }
+}
+async function openSupportTicket(ticket, statusLabels) {
+  if (!ticket) return;
+  const modal = document.createElement('div'); modal.className = 'modal-backdrop'; modal.id = 'support-ticket-view-modal';
+  modal.innerHTML = `<section class="modal property-modal support-ticket-modal"><button class="modal-close" type="button" aria-label="Fechar">×</button><p class="eyebrow">Solicitação de suporte</p><h2>${esc(ticket.assunto)}</h2><div class="ticket-view-meta"><span class="pill ticket-${esc(ticket.status)}">${esc(statusLabels[ticket.status] || ticket.status)}</span><span>${esc(ticket.categoria)}</span><span>Aberto em ${dateTime(ticket.created_at)}</span></div><p class="ticket-view-message">${esc(ticket.mensagem)}</p><div class="ticket-replies"><strong>Respostas do suporte</strong><p class="detail-empty">Carregando respostas…</p></div><div class="modal-actions"><button class="button secondary modal-cancel" type="button">Fechar</button></div></section>`;
+  document.body.append(modal); modal.querySelectorAll('.modal-close,.modal-cancel').forEach(button => button.onclick = () => modal.remove());
+  try { const replies = await api(rest('support_ticket_messages', `select=mensagem,is_admin,created_at&ticket_id=eq.${ticket.id}&order=created_at.asc`)); const target = modal.querySelector('.ticket-replies'); if (target) target.innerHTML = `<strong>Respostas do suporte</strong>${replies.length ? replies.map(reply => `<article class="ticket-reply ${reply.is_admin ? 'admin-reply' : ''}"><small>${reply.is_admin ? 'Suporte' : 'Você'} · ${dateTime(reply.created_at)}</small><p>${esc(reply.mensagem)}</p></article>`).join('') : '<p class="detail-empty">Ainda não há resposta para este ticket.</p>'}`; }
+  catch (error) { modal.querySelector('.ticket-replies .detail-empty')?.replaceWith(Object.assign(document.createElement('p'), { className: 'detail-empty', textContent: 'Não foi possível carregar as respostas.' })); }
+}
+async function renderAdminTickets() {
+  try {
+    const tickets = await api(rest('support_tickets', 'select=id,assunto,categoria,mensagem,status,created_at,user_id&order=created_at.desc'));
+    const labels = { aberto: 'Aberto', em_andamento: 'Em andamento', resolvido: 'Resolvido', fechado: 'Fechado' };
+    app.innerHTML = heading('Atendimento', 'Administração de tickets', 'Responda as solicitações e atualize o status do atendimento.') + `<section class="summary"><article class="card metric"><span>Tickets abertos</span><strong>${tickets.filter(ticket => ticket.status === 'aberto').length}</strong></article><article class="card metric"><span>Em andamento</span><strong>${tickets.filter(ticket => ticket.status === 'em_andamento').length}</strong></article><article class="card metric"><span>Total</span><strong>${tickets.length}</strong></article></section><section class="card admin-ticket-list"><div class="table-head"><h2>Todos os tickets</h2><button id="reload-admin-tickets" class="button secondary small">Atualizar</button></div>${tickets.length ? `<div class="ticket-list">${tickets.map(ticket => `<article class="ticket-item admin-ticket"><div><span class="pill ticket-${esc(ticket.status)}">${esc(labels[ticket.status] || ticket.status)}</span><h3>#${ticket.id} · ${esc(ticket.assunto)}</h3><small>${dateTime(ticket.created_at)} · ${esc(ticket.categoria)}</small><p>${esc(ticket.mensagem)}</p><form class="admin-ticket-form" data-admin-ticket="${ticket.id}"><div class="field"><label>Status</label><select name="status">${Object.entries(labels).map(([value, label]) => `<option value="${value}" ${ticket.status === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div><div class="field"><label>Resposta</label><textarea name="mensagem" maxlength="4000" placeholder="Escreva uma resposta ao cliente"></textarea></div><button class="button small">Salvar e responder</button></form></div></article>`).join('')}</div>` : '<p class="empty">Nenhum ticket aberto.</p>'}</section>`;
+    app.querySelectorAll('.admin-ticket h3').forEach(title => { title.textContent = title.textContent.replace(/^#\d+\s*·\s*/, ''); });
+    app.querySelector('#reload-admin-tickets').onclick = renderAdminTickets; app.querySelectorAll('[data-admin-ticket]').forEach(form => form.onsubmit = sendAdminTicketReply);
+  } catch (error) { app.innerHTML = heading('Atendimento', 'Administração de tickets', 'Acesso restrito ao administrador.') + `<section class="card empty"><h2>Sem acesso à central administrativa</h2><p>Cadastre sua conta como administradora na query de tickets para visualizar e responder solicitações.</p></section>`; }
+}
+async function sendAdminTicketReply(event) {
+  event.preventDefault(); const form = event.currentTarget; const id = Number(form.dataset.adminTicket); const data = Object.fromEntries(new FormData(form)); const button = form.querySelector('.button'); button.disabled = true;
+  try {
+    await api(rest('support_tickets', `id=eq.${id}`), jsonOptions('PATCH', { status: data.status }, { Prefer: 'return=minimal' }));
+    if (data.mensagem.trim()) await api(rest('support_ticket_messages'), jsonOptions('POST', { ticket_id: id, mensagem: data.mensagem.trim(), is_admin: true }, { Prefer: 'return=minimal' }));
+    notify('Ticket atualizado.'); await renderAdminTickets();
+  } catch (error) { notify(error.message, true); } finally { button.disabled = false; }
+}
 function renderSubscriptions() {
   app.innerHTML = heading('Plano', 'Assinaturas', 'Escolha seu plano e acompanhe pagamentos, Pix e renovação.') + '<section id="billing-settings" class="billing-settings" aria-label="Planos e assinatura"><p class="subtitle">Carregando seu plano…</p></section>';
   renderBilling(app.querySelector('#billing-settings'));
@@ -194,6 +269,12 @@ async function saveAccounting(event) {
 async function fetchHouses() { state.houses = await api(rest('casa', 'select=id,created_at,rua,numero,valor_casa,complemento&order=id.desc')); return state.houses; }
 
 function heading(eyebrow, title, subtitle, action = '') { return `<div class="page-heading"><div><p class="eyebrow">${eyebrow}</p><h1>${title}</h1><p class="subtitle">${subtitle}</p></div>${action}</div>`; }
+async function appendPortfolioMetrics() {
+  const summary = app.querySelector('.summary'); if (!summary) return;
+  const [payments, expenses] = await Promise.all([api(rest('pagamentos_casa', 'select=valor,pago')), api(rest('gastos_casa', 'select=valor,pago'))]);
+  const faturado = payments.reduce((sum, item) => sum + Number(item.valor || 0), 0); const received = payments.filter(item => item.pago).reduce((sum, item) => sum + Number(item.valor || 0), 0); const spent = expenses.filter(item => item.pago).reduce((sum, item) => sum + Number(item.valor || 0), 0); const profit = received - spent;
+  summary.insertAdjacentHTML('beforeend', `<article class="card metric financial-metric revenue-metric"><span>Já faturado</span><strong>${money(faturado)}</strong><small>Receitas cadastradas</small></article><article class="card metric financial-metric expense-metric"><span>Já gasto</span><strong>− ${money(spent)}</strong><small>Gastos marcados como pagos</small></article><article class="card metric financial-metric ${profit < 0 ? 'expense-metric' : 'revenue-metric'}"><span>Já lucrado</span><strong>${profit < 0 ? '− ' : ''}${money(Math.abs(profit))}</strong><small>Recebido menos gastos pagos</small></article>`);
+}
 async function loadCasas() {
   const houses = await fetchHouses();
   const income = houses.reduce((total, house) => total + Number(house.renda || 0), 0);
@@ -404,7 +485,7 @@ async function openApplication() {
 }
 async function signOut() {
   try { if (configured() && state.session?.access_token) await api('/auth/v1/logout', { method: 'POST' }); } catch { /* A sessão local ainda deve ser encerrada. */ }
-  localStorage.removeItem(sessionKey); state.session = null; renderAuth();
+  clearTimeout(sessionExpiryTimer); localStorage.removeItem(sessionKey); state.session = null; renderAuth();
 }
 async function restoreSession() {
   if (!state.session?.refresh_token || !configured()) return false;
@@ -570,14 +651,14 @@ async function renderHomeCalendar() {
   const start = `${month}-01`; const reference = new Date(`${start}T12:00:00`); const next = new Date(reference); next.setMonth(next.getMonth() + 1); const end = isoMonth(next.toISOString().slice(0, 7));
   try {
     const [payments, expenses] = await Promise.all([
-      api(rest('pagamentos_casa', `select=patrimonio_id,data_recebimento&data_recebimento=gte.${start}&data_recebimento=lt.${end}&pago=eq.true`)),
-      api(rest('gastos_casa', `select=patrimonio_id,descricao,valor,data&data=gte.${start}&data=lt.${end}`)),
+      api(rest('pagamentos_casa', `select=patrimonio_id,data_recebimento,valor&data_recebimento=gte.${start}&data_recebimento=lt.${end}&pago=eq.true`)),
+      api(rest('gastos_casa', 'select=patrimonio_id,descricao,valor,pago,data,data_pagamento')),
     ]);
     const assets = new Map(state.houses.map(asset => [asset.id, asset])); const events = {};
     const labelFor = id => assets.has(id) ? assetLabel(assets.get(id)) : 'Patrimônio removido';
     const add = (date, label, type) => { if (!date) return; const day = Number(String(date).slice(8, 10)); (events[day] ||= []).push({ label, type }); };
-    payments.forEach(item => add(item.data_recebimento, `Pagamento recebido · ${labelFor(item.patrimonio_id)}`, 'payment'));
-    expenses.forEach(item => add(item.data, `Gasto · ${item.descricao} · ${labelFor(item.patrimonio_id)} (${money(item.valor)})`, 'expense'));
+    payments.forEach(item => add(item.data_recebimento, `Recebido ${money(item.valor)} · ${labelFor(item.patrimonio_id)}`, 'payment'));
+    expenses.forEach(item => add(item.data, `${item.pago ? 'Gasto pago' : 'Gasto pendente'} · ${item.descricao} · ${labelFor(item.patrimonio_id)} (${money(item.valor)})`, item.pago ? 'expense-paid' : 'expense-pending'));
     const days = new Date(reference.getFullYear(), reference.getMonth() + 1, 0).getDate(); const first = new Date(reference.getFullYear(), reference.getMonth(), 1).getDay();
     const today = new Date(); const blanks = Array.from({ length: first }, () => '<div class="calendar-day blank"></div>').join('');
     const cells = Array.from({ length: days }, (_, i) => { const day = i + 1; const isToday = day === today.getDate() && reference.getMonth() === today.getMonth() && reference.getFullYear() === today.getFullYear(); return `<button type="button" class="calendar-day ${isToday ? 'today' : ''}" data-calendar-day="${day}"><strong>${day}</strong>${(events[day] || []).map(event => `<span class="calendar-event ${event.type}">${esc(event.label)}</span>`).join('')}</button>`; }).join('');
@@ -609,6 +690,250 @@ async function loadPagamentos() {
   app.innerHTML = heading('Receitas', 'Pagamentos', 'Cadastre pagamentos atuais ou retroativos.', '<button id="add-manual-payment" class="button">Adicionar pagamento</button>') + `<section class="summary"><div class="card metric"><span>Pagamentos cadastrados</span><strong>${payments.length}</strong></div><div class="card metric"><span>Recebido</span><strong>${money(received)}</strong></div><div class="card metric"><span>Pendente</span><strong>${money(pending)}</strong></div></section><section class="card table-card"><div class="table-head"><h2>Todos os pagamentos</h2><button id="reload" class="button secondary small">Atualizar</button></div><div class="table-wrap"><table><thead><tr><th>Patrimônio</th><th>Tipo</th><th>Valor</th><th>Lançamento</th><th>Vencimento</th><th>Status</th><th>Recebido em</th><th></th></tr></thead><tbody>${payments.length ? payments.map(item => `<tr><td>${esc(assets.has(item.patrimonio_id) ? assetLabel(assets.get(item.patrimonio_id)) : 'Patrimônio removido')}</td><td>${item.tipo === 'recorrente' ? 'Recorrente' : 'Avulso'}</td><td>${money(item.valor)}</td><td>${item.data_lancamento ? dateTime(item.data_lancamento) : '—'}</td><td>${item.data_vencimento ? dateTime(item.data_vencimento) : '—'}</td><td><span class="pill ${item.pago ? 'ok' : 'pending'}">${item.pago ? 'Recebido' : 'Pendente'}</span></td><td><input class="table-date" type="date" data-received-date="${item.id}" value="${esc(item.data_recebimento || new Date().toISOString().slice(0,10))}"></td><td><button class="icon-button" data-save-payment="${item.id}" data-paid="${item.pago}">${item.pago ? 'Atualizar' : 'Marcar recebido'}</button></td></tr>`).join('') : '<tr><td colspan="8" class="empty">Nenhum pagamento cadastrado.</td></tr>'}</tbody></table></div></section>`;
   document.querySelector('#reload').onclick = refresh; document.querySelector('#add-manual-payment').onclick = openManualPaymentForm;
   app.querySelectorAll('[data-save-payment]').forEach(button => button.onclick = async () => { const date = app.querySelector(`[data-received-date="${button.dataset.savePayment}"]`).value; if (!date) return notify('Informe a data de recebimento.', true); try { await api(rest('pagamentos_casa', `id=eq.${button.dataset.savePayment}`), jsonOptions('PATCH', { pago: true, data_recebimento: date }, { Prefer: 'return=minimal' })); notify('Pagamento atualizado.'); await loadPagamentos(); } catch (error) { notify(error.message, true); } });
+}
+
+async function showCalendarDay(day, events, referenceDate) {
+  const target = document.querySelector('#calendar-day-details'); if (!target) return;
+  const date = `${referenceDate.getFullYear()}-${String(referenceDate.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  const label = new Intl.DateTimeFormat('pt-BR', { day: 'numeric', month: 'long' }).format(new Date(`${date}T12:00:00`));
+  target.innerHTML = `<strong>${label}</strong>${events?.length ? events.map(event => `<span class="calendar-detail ${event.type}">${esc(event.label)}</span>`).join('') : '<span>Nenhum lançamento neste dia.</span>'}<p class="detail-empty">Carregando…</p>`;
+  try {
+    const [payments, expensesByDueDate, expensesByDate] = await Promise.all([
+      api(rest('pagamentos_casa', `select=id,patrimonio_id,categoria,valor&data_vencimento=eq.${date}&pago=eq.false`)),
+      api(rest('gastos_casa', `select=id,patrimonio_id,descricao,categoria,valor&data_vencimento=eq.${date}&pago=eq.false`)),
+      api(rest('gastos_casa', `select=id,patrimonio_id,descricao,categoria,valor&data=eq.${date}&pago=eq.false`)),
+    ]);
+    const expenses = [...new Map([...expensesByDueDate, ...expensesByDate].map(item => [item.id, item])).values()];
+    const assets = new Map(state.houses.map(asset => [asset.id, asset])); const labelFor = id => assets.has(id) ? assetLabel(assets.get(id)) : 'Patrimônio removido';
+    const actions = `${payments.map(item => `<div class="calendar-day-action receive"><span><strong>${esc(labelFor(item.patrimonio_id))}</strong><small>Receber ${money(item.valor)} · ${esc(normalizeCategory(item.categoria || 'OUTRAS RECEITAS'))}</small></span><button class="calendar-reminder-action" data-day-receive="${item.id}">Receber</button></div>`).join('')}${expenses.map(item => `<div class="calendar-day-action pay"><span><strong>${esc(item.descricao)}</strong><small>Pagar ${money(item.valor)} · ${esc(normalizeCategory(item.categoria || 'SEM CATEGORIA'))}</small></span><button class="calendar-reminder-action" data-day-pay="${item.id}">Pagar</button></div>`).join('')}`;
+    const loading = target.querySelector('.detail-empty'); if (loading) loading.outerHTML = actions || '<p class="detail-empty">Nenhuma ação pendente neste dia.</p>';
+    target.querySelectorAll('[data-day-receive]').forEach(button => button.onclick = async () => { try { await api(rest('pagamentos_casa', `id=eq.${button.dataset.dayReceive}`), jsonOptions('PATCH', { pago: true, data_recebimento: new Date().toISOString().slice(0, 10) }, { Prefer: 'return=minimal' })); notify('Receita marcada como recebida.'); await renderHomeCalendar(); } catch (error) { notify(error.message, true); } });
+    target.querySelectorAll('[data-day-pay]').forEach(button => button.onclick = async () => { try { await api(rest('gastos_casa', `id=eq.${button.dataset.dayPay}`), jsonOptions('PATCH', { pago: true, data_pagamento: new Date().toISOString().slice(0, 10) }, { Prefer: 'return=minimal' })); notify('Gasto marcado como pago.'); await renderHomeCalendar(); } catch (error) { notify(error.message, true); } });
+  } catch (error) { target.querySelector('.detail-empty')?.replaceWith(Object.assign(document.createElement('p'), { className: 'detail-empty', textContent: error.message })); }
+}
+
+async function loadCasas() {
+  const assets = await fetchHouses();
+  if (!assets.some(asset => asset.id === state.selectedHouseId)) state.selectedHouseId = null;
+  const total = assets.reduce((sum, asset) => sum + Number(asset.valor_patrimonio || 0), 0);
+  const selected = assets.find(asset => asset.id === state.selectedHouseId);
+  const cards = assets.length ? assets.map(asset => `<button class="property-choice ${state.selectedHouseId === asset.id ? 'selected' : ''}" data-property="${asset.id}">${propertyIcon(asset.tipo_patrimonio)}<strong>${esc(asset.nome)}</strong><small>${asset.tipo_patrimonio === 'casa' ? `Casa · ${esc(asset.rua || 'Sem endereço')}${asset.numero ? `, ${esc(asset.numero)}` : ''}` : asset.tipo_patrimonio === 'carro' ? 'Veículo' : 'Outro patrimônio'}</small></button>`).join('') : '<div class="card empty">Você ainda não cadastrou patrimônios.</div>';
+  app.innerHTML = heading('Patrimônio', 'Meus patrimônios', 'Gerencie casas, veículos e outros bens.', '<div class="heading-actions"><button id="reload" class="button secondary">Atualizar</button><button id="add-property" class="button">Adicionar patrimônio</button></div>') + `<section class="summary"><div class="card metric"><span>Patrimônios cadastrados</span><strong>${assets.length}</strong></div><div class="card metric"><span>Valor patrimonial</span><strong>${money(total)}</strong></div><div class="card metric"><span>Selecionado</span><strong>${selected ? esc(assetLabel(selected)) : '—'}</strong></div></section><section class="property-picker"><div class="picker-heading"><div><p class="eyebrow">Seleção de patrimônio</p><h2>Escolha um patrimônio</h2></div><p>Clique em um item para abrir os detalhes.</p></div><div class="property-grid">${cards}</div></section><div id="selected-property">${state.selectedHouseId ? '<div class="card empty">Carregando dados…</div>' : '<section class="card property-empty"><div>◆</div><h2>Selecione um patrimônio</h2><p>Os detalhes financeiros, gastos e documentos aparecerão aqui.</p></section>'}</div>`;
+  app.querySelector('#reload').onclick = refresh; app.querySelector('#add-property').onclick = openPropertyForm; app.querySelectorAll('[data-property]').forEach(button => button.onclick = () => selectProperty(Number(button.dataset.property)));
+  await renderHomeCalendar();
+  if (state.selectedHouseId) await renderSelectedProperty();
+  const layout = app.querySelector('.calendar-layout'); const picker = app.querySelector('.property-picker');
+  // A ordem da página é estável: resumo, calendário, lista e detalhes.
+  if (layout && picker) picker.before(layout);
+}
+
+// Campos ampliados do patrimônio. As fotos são guardadas como documentos de imagem
+// do próprio patrimônio, para que também respeitem o limite de armazenamento do plano.
+function propertySpecificFields(type, asset = {}) {
+  const field = (label, name, extra = '') => `<div class="field"><label>${label}</label><input name="${name}" ${extra} value="${esc(asset[name] ?? '')}"></div>`;
+  if (type === 'casa') return `${field('Rua', 'rua')}${field('Número', 'numero', 'type="number" min="1"')}${field('Complemento', 'complemento')}${field('Matrícula', 'matricula')}${field('Inscrição IPTU', 'inscricao_iptu')}${field('Área (m²)', 'area_m2', 'type="number" min="0" step="0.01"')}${field('Quartos', 'quartos', 'type="number" min="0"')}${field('Banheiros', 'banheiros', 'type="number" min="0"')}`;
+  if (type === 'carro') return `${field('Marca e modelo', 'marca_modelo')}${field('Placa', 'placa', 'maxlength="8" placeholder="ABC1D23"')}${field('RENAVAM', 'renavam')}${field('Ano de fabricação', 'ano_fabricacao', 'type="number" min="1886" max="2100"')}${field('Cor', 'cor')}`;
+  return field('Documento ou referência', 'documento_referencia');
+}
+function propertyCommonFields(asset = {}, includePhotos = true) {
+  return `<div class="field"><label>Data de aquisição</label><input name="data_aquisicao" type="date" value="${esc(asset.data_aquisicao || '')}"></div><div class="field"><label>Descrição</label><input name="descricao" value="${esc(asset.descricao || '')}" placeholder="Ex.: imóvel para locação"></div><div class="field property-notes"><label>Observações</label><textarea name="observacoes" placeholder="Informações adicionais">${esc(asset.observacoes || '')}</textarea></div>${includePhotos ? '<div class="field property-photos"><label>Fotos</label><input name="fotos" type="file" accept="image/png,image/jpeg,image/webp" multiple><small>PNG, JPEG ou WebP. As fotos ficam nos documentos do patrimônio.</small></div>' : ''}`;
+}
+function propertyPayload(data, type) {
+  const number = name => data[name] === '' || data[name] == null ? null : Number(data[name]);
+  const text = name => String(data[name] || '').trim() || null;
+  return {
+    tipo_patrimonio: type, nome: String(data.nome || '').trim(), valor_patrimonio: number('valor_patrimonio'),
+    descricao: text('descricao'), data_aquisicao: data.data_aquisicao || null, observacoes: text('observacoes'),
+    rua: type === 'casa' ? text('rua') : null, numero: type === 'casa' ? number('numero') : null, complemento: type === 'casa' ? text('complemento') : null,
+    matricula: type === 'casa' ? text('matricula') : null, inscricao_iptu: type === 'casa' ? text('inscricao_iptu') : null, area_m2: type === 'casa' ? number('area_m2') : null, quartos: type === 'casa' ? number('quartos') : null, banheiros: type === 'casa' ? number('banheiros') : null,
+    placa: type === 'carro' ? text('placa')?.toLocaleUpperCase('pt-BR') : null, renavam: type === 'carro' ? text('renavam') : null, marca_modelo: type === 'carro' ? text('marca_modelo') : null, ano_fabricacao: type === 'carro' ? number('ano_fabricacao') : null, cor: type === 'carro' ? text('cor') : null,
+    documento_referencia: type === 'outro' ? text('documento_referencia') : null,
+  };
+}
+async function uploadPropertyPhotos(assetId, files) {
+  for (const file of [...files]) {
+    if (!file.size) continue;
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) throw new Error('Use imagens PNG, JPEG ou WebP.');
+    await checkPlanQuota('document', assetId);
+    const path = `patrimonios/${assetId}/fotos/${crypto.randomUUID()}_${safeFileName(file.name)}`;
+    const rows = await api(rest('documentos_casa'), jsonOptions('POST', { patrimonio_id: assetId, nome_arquivo: file.name, tipo_arquivo: file.type, tamanho: file.size, caminho_arquivo: path, descricao: 'Foto do patrimônio' }, { Prefer: 'return=representation' }));
+    try { await api('/storage/v1/object/documentos/' + path.split('/').map(encodeURIComponent).join('/'), { method: 'POST', headers: { 'Content-Type': file.type, 'x-upsert': 'false' }, body: file }); }
+    catch (error) { await api(rest('documentos_casa', `id=eq.${rows[0].id}`), jsonOptions('DELETE', null)); throw error; }
+  }
+}
+function openPropertyForm() {
+  document.querySelector('#add-property-modal')?.remove(); const modal = document.createElement('div'); modal.id = 'add-property-modal'; modal.className = 'modal-backdrop';
+  modal.innerHTML = `<section class="modal property-modal asset-modal"><button class="modal-close" type="button">×</button><p class="eyebrow">Novo patrimônio</p><h2>Adicionar patrimônio</h2><form id="add-property-form" class="form-grid"><div class="field"><label>Tipo *</label><select name="tipo_patrimonio" id="asset-type"><option value="casa">Casa</option><option value="carro">Carro</option><option value="outro">Outro</option></select></div><div class="field"><label>Nome / identificação *</label><input name="nome" required placeholder="Ex.: Casa Jardim ou Honda Civic"></div><div class="field"><label>Valor do patrimônio</label><input name="valor_patrimonio" type="number" min="0" step="0.01"></div><div id="asset-specific-fields" class="asset-extra-fields">${propertySpecificFields('casa')}</div>${propertyCommonFields()}<div class="modal-actions"><button type="button" class="button secondary modal-cancel">Cancelar</button><button class="button">Cadastrar</button></div></form></section>`;
+  document.body.append(modal); const type = modal.querySelector('#asset-type'); type.onchange = () => { modal.querySelector('#asset-specific-fields').innerHTML = propertySpecificFields(type.value); };
+  modal.querySelector('#add-property-form').onsubmit = createHouse; modal.querySelectorAll('.modal-close,.modal-cancel').forEach(button => button.onclick = () => modal.remove());
+}
+async function createHouse(event) {
+  event.preventDefault(); const form = event.currentTarget; const button = form.querySelector('.button:not([type=button])'); if (button.disabled) return; button.disabled = true;
+  const data = Object.fromEntries(new FormData(form)); const files = form.querySelector('[name="fotos"]')?.files || [];
+  try { await checkPlanQuota('asset'); const rows = await api(rest('patrimonio'), jsonOptions('POST', propertyPayload(data, data.tipo_patrimonio), { Prefer: 'return=representation' })); await uploadPropertyPhotos(rows[0].id, files); document.querySelector('#add-property-modal')?.remove(); notify('Patrimônio cadastrado.'); await refresh(); }
+  catch (error) { notify(error.message, true); } finally { button.disabled = false; }
+}
+async function fetchHouses() { state.houses = await api(rest('patrimonio', 'select=id,created_at,nome,tipo_patrimonio,rua,numero,complemento,valor_patrimonio,descricao,data_aquisicao,observacoes,matricula,inscricao_iptu,area_m2,quartos,banheiros,placa,renavam,marca_modelo,ano_fabricacao,cor,documento_referencia&order=id.desc')); return state.houses; }
+async function renderSelectedProperty() {
+  const asset = state.houses.find(item => item.id === state.selectedHouseId); const target = document.querySelector('#selected-property'); if (!asset || !target) return;
+  try {
+    const [payments, expenses, docs] = await Promise.all([api(rest('pagamentos_casa', `select=id,valor,pago&patrimonio_id=eq.${asset.id}`)), api(rest('gastos_casa', `select=valor&patrimonio_id=eq.${asset.id}`)), api(rest('documentos_casa', `select=id,nome_arquivo,tipo_arquivo,descricao&patrimonio_id=eq.${asset.id}&order=data_upload.desc`))]);
+    const received = payments.filter(item => item.pago).reduce((sum, item) => sum + Number(item.valor || 0), 0); const expensesTotal = expenses.reduce((sum, item) => sum + Number(item.valor || 0), 0); const photos = docs.filter(item => String(item.tipo_arquivo || '').startsWith('image/'));
+    const detailRows = asset.tipo_patrimonio === 'casa' ? [['Matrícula', asset.matricula], ['IPTU', asset.inscricao_iptu], ['Área', asset.area_m2 == null ? null : `${asset.area_m2} m²`], ['Quartos', asset.quartos], ['Banheiros', asset.banheiros]] : asset.tipo_patrimonio === 'carro' ? [['Marca/modelo', asset.marca_modelo], ['Placa', asset.placa], ['RENAVAM', asset.renavam], ['Ano', asset.ano_fabricacao], ['Cor', asset.cor]] : [['Referência', asset.documento_referencia]];
+    target.innerHTML = `<section class="property-summary"><div class="property-summary-title">${propertyIcon(asset.tipo_patrimonio)}<div><p class="eyebrow">${esc(asset.tipo_patrimonio)}</p><h2>${esc(assetLabel(asset))}</h2><p>${esc(asset.descricao || 'Patrimônio cadastrado')}</p></div></div><button class="icon-button delete" data-delete-house="${asset.id}">Excluir</button></section><section class="detail-metrics"><div class="card metric"><span>Valor do patrimônio</span><strong>${asset.valor_patrimonio == null ? '—' : money(asset.valor_patrimonio)}</strong></div><div class="card metric"><span>Recebido</span><strong>${money(received)}</strong></div><div class="card metric"><span>Gastos</span><strong>${money(expensesTotal)}</strong></div><div class="card metric"><span>Fotos</span><strong>${photos.length}</strong></div></section><section class="card asset-information"><h3>Informações do patrimônio</h3><div class="asset-information-grid">${detailRows.filter(([, value]) => value !== null && value !== '').map(([label, value]) => `<div><span>${esc(label)}</span><strong>${esc(String(value))}</strong></div>`).join('') || '<p class="detail-empty">Nenhuma informação adicional cadastrada.</p>'}</div>${asset.observacoes ? `<p class="asset-notes"><strong>Observações</strong>${esc(asset.observacoes)}</p>` : ''}</section><section class="card property-panel property-photo-panel"><h3>Fotos</h3>${photos.length ? photos.map(photo => `<div class="property-row"><span><strong>${esc(shortFileName(photo.nome_arquivo))}</strong><small>${esc(photo.descricao || 'Foto do patrimônio')}</small></span><button class="icon-button small" data-open-property-document="${photo.id}">Abrir</button></div>`).join('') : '<p class="detail-empty">Nenhuma foto enviada.</p>'}</section><section class="card edit-property"><h3>Editar patrimônio</h3><form id="property-edit-form" class="form-grid"><div class="field"><label>Nome *</label><input name="nome" required value="${esc(asset.nome)}"></div><div class="field"><label>Valor</label><input name="valor_patrimonio" type="number" min="0" step="0.01" value="${asset.valor_patrimonio ?? ''}"></div><div class="asset-extra-fields">${propertySpecificFields(asset.tipo_patrimonio, asset)}</div>${propertyCommonFields(asset)}<div class="modal-actions"><button class="button">Salvar alterações</button></div></form></section>`;
+    target.querySelector('[data-delete-house]').onclick = () => removeHouse(asset.id); target.querySelector('#property-edit-form').onsubmit = event => updateProperty(event, asset.id); target.querySelectorAll('[data-open-property-document]').forEach(button => button.onclick = () => openPropertyDocument(Number(button.dataset.openPropertyDocument)));
+  } catch (error) { target.innerHTML = `<div class="card empty">Não foi possível carregar este patrimônio.<br><small>${esc(error.message)}</small></div>`; }
+}
+async function updateProperty(event, id) { event.preventDefault(); const form = event.currentTarget; const data = Object.fromEntries(new FormData(form)); const asset = state.houses.find(item => item.id === id); try { await api(rest('patrimonio', `id=eq.${id}`), jsonOptions('PATCH', propertyPayload(data, asset.tipo_patrimonio), { Prefer: 'return=minimal' })); await uploadPropertyPhotos(id, form.querySelector('[name="fotos"]')?.files || []); notify('Patrimônio atualizado.'); await loadCasas(); } catch (error) { notify(error.message, true); } }
+
+function openPropertyMetricModal(title, content, action = null) {
+  document.querySelector('#property-metric-modal')?.remove();
+  const modal = document.createElement('div'); modal.id = 'property-metric-modal'; modal.className = 'modal-backdrop';
+  modal.innerHTML = `<section class="modal property-modal metric-modal"><button class="modal-close" type="button" aria-label="Fechar">×</button><p class="eyebrow">Detalhes</p><h2>${esc(title)}</h2><div class="metric-modal-content">${content}</div><div class="modal-actions">${action ? `<button type="button" class="button" data-metric-add>${esc(action.label)}</button>` : ''}<button type="button" class="button secondary modal-cancel">Fechar</button></div></section>`;
+  document.body.append(modal); modal.querySelectorAll('.modal-close,.modal-cancel').forEach(button => button.onclick = () => modal.remove());
+  modal.querySelectorAll('[data-open-metric-document]').forEach(button => button.onclick = () => openPropertyDocument(Number(button.dataset.openMetricDocument)));
+  modal.querySelectorAll('[data-preview-property-photo]').forEach(button => button.onclick = () => previewPropertyPhoto(Number(button.dataset.previewPropertyPhoto)));
+  modal.querySelector('[data-metric-add]')?.addEventListener('click', () => action.run(modal));
+}
+async function previewPropertyPhoto(id) {
+  try {
+    const rows = await api(rest('documentos_casa', `select=id,nome_arquivo,caminho_arquivo&patrimonio_id=eq.${state.selectedHouseId}&id=eq.${id}`)); const photo = rows[0];
+    if (!photo) throw new Error('Foto não encontrada.');
+    const signedData = await api(`/storage/v1/object/sign/documentos/${photo.caminho_arquivo.split('/').map(encodeURIComponent).join('/')}`, jsonOptions('POST', { expiresIn: 3600 })); const signed = signedData.signedURL || signedData.signedUrl;
+    if (!signed) throw new Error('Não foi possível carregar a foto.');
+    const url = signed.startsWith('http') ? signed : `${supabaseBase()}/storage/v1${signed}`; document.querySelector('#property-metric-modal')?.remove();
+    const modal = document.createElement('div'); modal.id = 'property-photo-preview'; modal.className = 'modal-backdrop';
+    modal.innerHTML = `<section class="modal property-modal photo-preview-modal"><button class="modal-close" type="button" aria-label="Fechar">×</button><p class="eyebrow">Foto do patrimônio</p><h2>${esc(shortFileName(photo.nome_arquivo))}</h2><img src="${esc(url)}" alt="${esc(photo.nome_arquivo)}"><div class="modal-actions"><a class="button secondary" href="${esc(url)}" target="_blank" rel="noopener">Abrir em outra aba</a><button type="button" class="button modal-cancel">Fechar</button></div></section>`;
+    document.body.append(modal); modal.querySelectorAll('.modal-close,.modal-cancel').forEach(button => button.onclick = () => modal.remove());
+  } catch (error) { notify(error.message, true); }
+}
+function metricRows(items, render, empty) { return items.length ? `<div class="metric-list">${items.map(render).join('')}</div>` : `<p class="detail-empty">${empty}</p>`; }
+async function renderSelectedProperty() {
+  const asset = state.houses.find(item => item.id === state.selectedHouseId); const target = document.querySelector('#selected-property'); if (!asset || !target) return;
+  try {
+    const [payments, expenses, docs] = await Promise.all([
+      api(rest('pagamentos_casa', `select=id,categoria,tipo,valor,pago,data_lancamento,data_vencimento,data_recebimento&patrimonio_id=eq.${asset.id}&order=data_lancamento.desc.nullslast`)),
+      api(rest('gastos_casa', `select=id,descricao,categoria,valor,pago,data,data_pagamento,data_vencimento&patrimonio_id=eq.${asset.id}&order=data.desc`)),
+      api(rest('documentos_casa', `select=id,nome_arquivo,tipo_arquivo,descricao,data_upload&patrimonio_id=eq.${asset.id}&order=data_upload.desc`)),
+    ]);
+    const receivedPayments = payments.filter(item => item.pago); const received = receivedPayments.reduce((sum, item) => sum + Number(item.valor || 0), 0); const expensesTotal = expenses.reduce((sum, item) => sum + Number(item.valor || 0), 0); const photos = docs.filter(item => String(item.tipo_arquivo || '').startsWith('image/')); const documents = docs.filter(item => !String(item.tipo_arquivo || '').startsWith('image/'));
+    const detailRows = asset.tipo_patrimonio === 'casa' ? [['Matrícula', asset.matricula], ['IPTU', asset.inscricao_iptu], ['Área', asset.area_m2 == null ? null : `${asset.area_m2} m²`], ['Quartos', asset.quartos], ['Banheiros', asset.banheiros]] : asset.tipo_patrimonio === 'carro' ? [['Marca/modelo', asset.marca_modelo], ['Placa', asset.placa], ['RENAVAM', asset.renavam], ['Ano', asset.ano_fabricacao], ['Cor', asset.cor]] : [['Referência', asset.documento_referencia]];
+    const metric = (kind, label, value, tone = '') => `<button type="button" class="card metric metric-clickable ${tone}" data-property-metric="${kind}"><span>${label}</span><strong>${value}</strong><small>Ver detalhes</small></button>`;
+    target.innerHTML = `<section class="property-summary"><div class="property-summary-title">${propertyIcon(asset.tipo_patrimonio)}<div><p class="eyebrow">${esc(asset.tipo_patrimonio)}</p><h2>${esc(assetLabel(asset))}</h2><p>${esc(asset.descricao || 'Patrimônio cadastrado')}</p></div></div><button class="icon-button delete" data-delete-house="${asset.id}">Excluir</button></section><section class="detail-metrics detail-metrics-five">${metric('value', 'Valor do patrimônio', asset.valor_patrimonio == null ? '—' : money(asset.valor_patrimonio))}${metric('received', 'Recebido', money(received), 'revenue-metric')}${metric('expenses', 'Gastos', `− ${money(expensesTotal)}`, 'expense-metric')}${metric('photos', 'Fotos', photos.length)}${metric('documents', 'Documentos', documents.length)}</section><section class="card asset-information"><h3>Informações do patrimônio</h3><div class="asset-information-grid">${detailRows.filter(([, value]) => value !== null && value !== '').map(([label, value]) => `<div><span>${esc(label)}</span><strong>${esc(String(value))}</strong></div>`).join('') || '<p class="detail-empty">Nenhuma informação adicional cadastrada.</p>'}</div>${asset.observacoes ? `<p class="asset-notes"><strong>Observações</strong>${esc(asset.observacoes)}</p>` : ''}</section><section class="card edit-property"><h3>Editar patrimônio</h3><form id="property-edit-form" class="form-grid"><div class="field"><label>Nome *</label><input name="nome" required value="${esc(asset.nome)}"></div><div class="field"><label>Valor</label><input name="valor_patrimonio" type="number" min="0" step="0.01" value="${asset.valor_patrimonio ?? ''}"></div><div class="asset-extra-fields">${propertySpecificFields(asset.tipo_patrimonio, asset)}</div>${propertyCommonFields(asset)}<div class="modal-actions"><button class="button">Salvar alterações</button></div></form></section>`;
+    const details = `<div class="asset-information-grid">${[['Tipo', asset.tipo_patrimonio], ['Nome', asset.nome], ['Valor', asset.valor_patrimonio == null ? '—' : money(asset.valor_patrimonio)], ['Aquisição', asset.data_aquisicao ? dateTime(asset.data_aquisicao) : '—'], ...detailRows].filter(([, value]) => value !== null && value !== '').map(([label, value]) => `<div><span>${esc(label)}</span><strong>${esc(String(value))}</strong></div>`).join('')}</div>${asset.descricao ? `<p class="asset-notes"><strong>Descrição</strong>${esc(asset.descricao)}</p>` : ''}${asset.observacoes ? `<p class="asset-notes"><strong>Observações</strong>${esc(asset.observacoes)}</p>` : ''}`;
+    const paymentList = metricRows(receivedPayments, item => `<div class="metric-list-row"><span><strong>${esc(normalizeCategory(item.categoria || 'OUTRAS RECEITAS'))}</strong><small>${item.data_recebimento ? `Recebido em ${dateTime(item.data_recebimento)}` : 'Recebido'}</small></span><b class="income-positive">${money(item.valor)}</b></div>`, 'Nenhum pagamento recebido.');
+    const expenseList = metricRows(expenses, item => `<div class="metric-list-row"><span><strong>${esc(item.descricao)}</strong><small>${esc(normalizeCategory(item.categoria || 'SEM CATEGORIA'))} · ${dateTime(item.data)}</small></span><b class="expense-value">− ${money(item.valor)}</b></div>`, 'Nenhum gasto registrado.');
+    const fileList = (items, message, photoList = false) => metricRows(items, item => `<div class="metric-list-row"><span><strong>${esc(shortFileName(item.nome_arquivo))}</strong><small>${esc(item.descricao || dateTime(item.data_upload))}</small></span><button class="icon-button small" ${photoList ? `data-preview-property-photo="${item.id}">Ver foto` : `data-open-metric-document="${item.id}">Abrir`}</button></div>`, message);
+    target.querySelector('[data-delete-house]').onclick = () => removeHouse(asset.id); target.querySelector('#property-edit-form').onsubmit = event => updateProperty(event, asset.id);
+    target.querySelectorAll('[data-property-metric]').forEach(button => button.onclick = () => {
+      const content = { value: details, received: paymentList, expenses: expenseList, photos: fileList(photos, 'Nenhuma foto enviada.', true), documents: fileList(documents, 'Nenhum documento enviado.') }[button.dataset.propertyMetric];
+      const openPageForm = async (page, buttonId) => { await goTo(page); app.querySelector(`#${buttonId}`)?.click(); const select = document.querySelector('[name="patrimonio_id"]'); if (select) select.value = String(asset.id); };
+      const actions = {
+        value: { label: 'Editar patrimônio', run: modal => { modal.remove(); target.querySelector('.edit-property')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } },
+        received: { label: 'Adicionar receita', run: async modal => { modal.remove(); await openManualPaymentForm(); const select = document.querySelector('#manual-payment-form [name="patrimonio_id"]'); if (select) select.value = String(asset.id); } },
+        expenses: { label: 'Adicionar gasto', run: modal => { modal.remove(); openPageForm('gastos', 'add-expense'); } },
+        photos: { label: 'Adicionar fotos', run: modal => { modal.remove(); openPageForm('documentos', 'add-document'); } },
+        documents: { label: 'Adicionar documento', run: modal => { modal.remove(); openPageForm('documentos', 'add-document'); } },
+      };
+      openPropertyMetricModal(button.querySelector('span').textContent, content, actions[button.dataset.propertyMetric]);
+    });
+  } catch (error) { target.innerHTML = `<div class="card empty">Não foi possível carregar este patrimônio.<br><small>${esc(error.message)}</small></div>`; }
+}
+
+function recurringPaymentKey(item, dueDate) { return [item.patrimonio_id, normalizeCategory(item.categoria || 'OUTRAS RECEITAS'), Number(item.valor || 0), dueDate].join('|'); }
+async function ensureRecurringPaymentsForCurrentMonth(month) {
+  if (month !== currentMonth()) return;
+  const payments = await api(rest('pagamentos_casa', 'select=patrimonio_id,tipo,categoria,valor,data_vencimento,pago'));
+  const [year, monthNumber] = month.split('-').map(Number); const lastDay = new Date(year, monthNumber, 0).getDate();
+  const existing = new Set(payments.filter(item => item.data_vencimento).map(item => recurringPaymentKey(item, item.data_vencimento)));
+  for (const payment of payments.filter(item => item.tipo === 'recorrente' && item.data_vencimento && item.data_vencimento.slice(0, 7) < month)) {
+    const day = Math.min(Number(payment.data_vencimento.slice(8, 10)), lastDay); const dueDate = `${month}-${String(day).padStart(2, '0')}`; const key = recurringPaymentKey(payment, dueDate);
+    if (existing.has(key)) continue;
+    await api(rest('pagamentos_casa'), jsonOptions('POST', { patrimonio_id: payment.patrimonio_id, tipo: 'recorrente', categoria: normalizeCategory(payment.categoria || 'OUTRAS RECEITAS'), valor: Number(payment.valor), data_lancamento: dueDate, data_vencimento: dueDate, pago: false }, { Prefer: 'return=minimal' }));
+    existing.add(key);
+  }
+}
+async function renderHomeCalendar() {
+  const picker = app.querySelector('.property-picker'); if (!picker) return;
+  const month = state.calendarMonth || currentMonth(); state.calendarMonth = month; const start = `${month}-01`; const reference = new Date(`${start}T12:00:00`); const next = new Date(reference); next.setMonth(next.getMonth() + 1); const end = isoMonth(next.toISOString().slice(0, 7));
+  try {
+    await ensureRecurringPaymentsForCurrentMonth(month);
+    const reminderStart = month === currentMonth() ? new Date().toISOString().slice(0, 10) : start;
+    const [payments, expenses, reminders, expenseReminders] = await Promise.all([
+      api(rest('pagamentos_casa', `select=patrimonio_id,data_recebimento,valor&data_recebimento=gte.${start}&data_recebimento=lt.${end}&pago=eq.true`)),
+      api(rest('gastos_casa', `select=patrimonio_id,descricao,valor,pago,data&data=gte.${start}&data=lt.${end}`)),
+      api(rest('pagamentos_casa', 'select=id,patrimonio_id,tipo,categoria,valor,data_vencimento&pago=eq.false&order=data_vencimento.asc.nullslast')),
+      api(rest('gastos_casa', 'select=id,patrimonio_id,descricao,categoria,valor,data_vencimento&pago=eq.false&order=data_vencimento.asc.nullslast')),
+    ]);
+    const assets = new Map(state.houses.map(asset => [asset.id, asset])); const labelFor = id => assets.has(id) ? assetLabel(assets.get(id)) : 'Patrimônio removido'; const events = {}; const add = (date, label, type) => { if (!date) return; const day = Number(String(date).slice(8, 10)); (events[day] ||= []).push({ label, type }); };
+    payments.forEach(item => add(item.data_recebimento, `Recebido ${money(item.valor)} · ${labelFor(item.patrimonio_id)}`, 'payment'));
+    expenses.forEach(item => { const eventDate = item.pago ? (item.data_pagamento || item.data) : item.data; if (String(eventDate || '').slice(0, 7) === month) add(eventDate, `${item.pago ? 'Gasto pago' : 'Gasto pendente'} · ${item.descricao} (${money(item.valor)})`, item.pago ? 'expense-paid' : 'expense-pending'); });
+    reminders.forEach(item => { if (String(item.data_vencimento || '').slice(0, 7) === month) add(item.data_vencimento, `Lembrete de receber · ${money(item.valor)}`, 'due'); });
+    const days = new Date(reference.getFullYear(), reference.getMonth() + 1, 0).getDate(); const first = new Date(reference.getFullYear(), reference.getMonth(), 1).getDay(); const blanks = Array.from({ length: first }, () => '<div class="calendar-day blank"></div>').join(''); const today = new Date();
+    const cells = Array.from({ length: days }, (_, index) => { const day = index + 1; const isToday = day === today.getDate() && reference.getMonth() === today.getMonth() && reference.getFullYear() === today.getFullYear(); const dayEvents = events[day] || []; const summary = dayEvents.length >= 3 ? `<span class="calendar-event calendar-more">${dayEvents.length} ações</span>` : dayEvents.map(event => `<span class="calendar-event ${event.type}">${esc(event.label)}</span>`).join(''); return `<button type="button" class="calendar-day ${isToday ? 'today' : ''}" data-calendar-day="${day}"><strong>${day}</strong>${summary}</button>`; }).join('');
+    app.querySelector('.calendar-layout')?.remove(); picker.insertAdjacentHTML('afterend', `<section class="calendar-card card"><div class="calendar-head"><div><p class="eyebrow">Visão geral</p><h2>Calendário financeiro</h2></div><div class="toolbar"><label for="calendar-month">Mês</label><input class="month-control" id="calendar-month" type="month" value="${month}"></div></div><div class="calendar-weekdays"><span>Dom</span><span>Seg</span><span>Ter</span><span>Qua</span><span>Sex</span><span>Sáb</span></div><div class="calendar-grid">${blanks}${cells}</div></section><section id="calendar-day-details" class="calendar-day-details card">Clique em um dia para ver os lançamentos.</section><aside class="card calendar-reminders"><p class="eyebrow">Lembretes</p><h2>Próximos vencimentos</h2><p class="calendar-reminder-note">Receitas e gastos pendentes em ${esc(new Intl.DateTimeFormat('pt-BR', { month: 'long' }).format(reference))}.</p>${reminders.map(item => `<div class="calendar-reminder"><span>${dateTime(item.data_vencimento)}</span><button class="calendar-reminder-action" data-reminder-payment="${item.id}">Recebi</button><strong>${esc(labelFor(item.patrimonio_id))}</strong><small>RECEBER · ${esc(normalizeCategory(item.categoria || 'OUTRAS RECEITAS'))}</small><b>${money(item.valor)}</b></div>`).join('')}${expenseReminders.map(item => `<div class="calendar-reminder expense-reminder"><span>${dateTime(item.data_vencimento)}</span><button class="calendar-reminder-action" data-reminder-expense="${item.id}">Paguei</button><strong>${esc(labelFor(item.patrimonio_id))}</strong><small>PAGAR · ${esc(normalizeCategory(item.categoria || 'SEM CATEGORIA'))}</small><b>− ${money(item.valor)}</b></div>`).join('')}${!reminders.length && !expenseReminders.length ? '<p class="detail-empty">Nenhum vencimento pendente neste período.</p>' : ''}</aside>`);
+    const calendar = app.querySelector('.calendar-card'); const details = app.querySelector('#calendar-day-details'); const reminderCard = app.querySelector('.calendar-reminders'); if (calendar && details && reminderCard) { reminderCard.querySelector('h2').textContent = 'Pendências'; reminderCard.querySelector('.calendar-reminder-note').textContent = 'Todas as receitas e gastos ainda pendentes.'; const layout = document.createElement('section'); layout.className = 'calendar-layout'; calendar.before(layout); layout.append(calendar, details, reminderCard); setTimeout(() => picker.before(layout)); }
+    app.querySelector('#calendar-month').onchange = async event => { state.calendarMonth = event.currentTarget.value || currentMonth(); await renderHomeCalendar(); }; app.querySelectorAll('[data-calendar-day]').forEach(button => button.onclick = () => showCalendarDay(Number(button.dataset.calendarDay), events[Number(button.dataset.calendarDay)], reference));
+    app.querySelectorAll('[data-reminder-payment]').forEach(button => button.onclick = async () => { try { await api(rest('pagamentos_casa', `id=eq.${button.dataset.reminderPayment}`), jsonOptions('PATCH', { pago: true, data_recebimento: new Date().toISOString().slice(0, 10) }, { Prefer: 'return=minimal' })); notify('Receita marcada como recebida.'); await renderHomeCalendar(); } catch (error) { notify(error.message, true); } });
+    app.querySelectorAll('[data-reminder-expense]').forEach(button => button.onclick = async () => { try { await api(rest('gastos_casa', `id=eq.${button.dataset.reminderExpense}`), jsonOptions('PATCH', { pago: true, data_pagamento: new Date().toISOString().slice(0, 10) }, { Prefer: 'return=minimal' })); notify('Gasto marcado como pago.'); await renderHomeCalendar(); } catch (error) { notify(error.message, true); } });
+  } catch (error) { console.warn('Calendário indisponível:', error); }
+}
+
+function promoteFormToModal(selector, buttonText, buttonId, submitHandler) {
+  const form = app.querySelector(selector); const card = form?.closest('.form-card'); const headingElement = app.querySelector('.page-heading');
+  if (!form || !card || !headingElement) return;
+  const markup = card.innerHTML; card.remove();
+  headingElement.insertAdjacentHTML('beforeend', `<button id="${buttonId}" class="button" type="button">${buttonText}</button>`);
+  app.querySelector(`#${buttonId}`).onclick = () => {
+    const modal = document.createElement('div'); modal.className = 'modal-backdrop'; modal.innerHTML = `<section class="modal property-modal payment-modal"><button class="modal-close" type="button">×</button>${markup.replace(/<h2[^>]*>.*?<\/h2>/, '')}</section>`; document.body.append(modal);
+    const modalForm = modal.querySelector(selector); if (selector === '#expense-form') { const expenseDate = modalForm.querySelector('[name="data"]')?.closest('.field'); expenseDate?.insertAdjacentHTML('afterend', `<div class="field"><label>Data de vencimento</label><input name="data_vencimento" type="date"></div>`); } modalForm.onsubmit = submitHandler;
+    const category = modal.querySelector('[name="categoria"]'); if (category) category.oninput = () => { category.value = category.value.toLocaleUpperCase('pt-BR'); };
+    modal.querySelector('.modal-close').onclick = () => modal.remove();
+  };
+}
+
+async function enhanceExpensePaymentDates() {
+  const dueDates = new Map((await api(rest('gastos_casa', 'select=id,data_vencimento'))).map(item => [String(item.id), item.data_vencimento || '']));
+  const header = app.querySelector('thead th:nth-child(6)'); if (header) header.textContent = 'Vencimento';
+  app.querySelectorAll('tbody tr').forEach(row => {
+    const update = row.querySelector('[data-update-expense]'); const toggle = row.querySelector('[data-toggle-expense]');
+    if (!update || !toggle || !row.cells[5]) return;
+    const dueDate = dueDates.get(String(update.dataset.updateExpense)) || '';
+    row.cells[5].innerHTML = `<input class="table-date" type="date" data-expense-due-date="${update.dataset.updateExpense}" value="${dueDate}">`;
+    update.onclick = async () => {
+      const expenseDate = app.querySelector(`[data-expense-date="${update.dataset.updateExpense}"]`).value;
+      const dueDate = app.querySelector(`[data-expense-due-date="${update.dataset.updateExpense}"]`).value;
+      if (!expenseDate) return notify('Informe a data do gasto.', true);
+      try { await api(rest('gastos_casa', `id=eq.${update.dataset.updateExpense}`), jsonOptions('PATCH', { data: expenseDate, data_vencimento: dueDate || null }, { Prefer: 'return=minimal' })); notify('Datas atualizadas.'); await refresh(); }
+      catch (error) { notify(error.message, true); }
+    };
+  });
+}
+
+async function patchExpense(id, paid) {
+  const date = paid ? new Date().toISOString().slice(0, 10) : null;
+  try {
+    await api(rest('gastos_casa', `id=eq.${id}`), jsonOptions('PATCH', { pago: paid, data_pagamento: date }, { Prefer: 'return=minimal' }));
+    notify('Gasto atualizado.');
+    await refresh();
+  } catch (error) { notify(error.message, true); }
+}
+
+async function renderCategories() {
+  setLoading('Carregando categorias…');
+  try {
+    const [payments, expenses] = await Promise.all([
+      api(rest('pagamentos_casa', 'select=categoria,valor')),
+      api(rest('gastos_casa', 'select=categoria,valor')),
+    ]);
+    const totalByCategory = rows => [...rows.reduce((map, row) => { const category = normalizeCategory(row.categoria || 'SEM CATEGORIA'); map.set(category, (map.get(category) || 0) + Number(row.valor || 0)); return map; }, new Map()).entries()].map(([name, total]) => ({ name, total })).sort((a, b) => b.total - a.total);
+    const income = totalByCategory(payments); const expense = totalByCategory(expenses);
+    const defaults = { income: ['ALUGUEL', 'VENDA', 'SERVIÇOS', 'REEMBOLSO', 'OUTRAS RECEITAS'], expense: ['MANUTENÇÃO', 'IMPOSTOS', 'CONDOMÍNIO', 'SEGUROS', 'ÁGUA', 'ENERGIA', 'OUTROS GASTOS'] };
+    const categoryRows = (rows, preset) => [...new Set([...preset, ...rows.map(row => row.name)])].map(name => ({ name, total: rows.find(row => row.name === name)?.total || 0 }));
+    const card = (title, description, rows, preset, action) => `<article class="card category-card"><div><p class="eyebrow">${title}</p><h2>${description}</h2></div><div class="category-list">${categoryRows(rows, preset).map(row => `<div><span>${esc(row.name)}</span><strong>${money(row.total)}</strong></div>`).join('')}</div><button type="button" class="button secondary small" data-category-action="${action}">Cadastrar ${action === 'income' ? 'receita' : 'gasto'}</button></article>`;
+    app.innerHTML = heading('Organização financeira', 'Categorias', 'Categorias prontas e personalizadas. Digite uma nova categoria no cadastro para adicioná-la.') + `<section class="summary"><article class="card metric"><span>Categorias de receitas</span><strong>${income.length}</strong></article><article class="card metric"><span>Categorias de gastos</span><strong>${expense.length}</strong></article><article class="card metric"><span>Total categorizado</span><strong>${money(payments.reduce((sum, row) => sum + Number(row.valor || 0), 0) + expenses.reduce((sum, row) => sum + Number(row.valor || 0), 0))}</strong></article></section><section class="category-grid">${card('Receitas', 'Total por categoria de receita', income, defaults.income, 'income')}${card('Gastos', 'Total por categoria de gasto', expense, defaults.expense, 'expense')}</section>`;
+    app.querySelectorAll('[data-category-action]').forEach(button => button.onclick = () => goTo(button.dataset.categoryAction === 'income' ? 'pagamentos' : 'gastos'));
+  } catch (error) { showError(error); }
 }
 async function selectProperty(id) {
   state.selectedHouseId = id;
@@ -642,15 +967,118 @@ async function loadGastos() {
 async function selectProperty(id) {
   state.selectedHouseId = id;
   await loadCasas();
+  await appendPortfolioMetrics();
   const placeCalendarFirst = () => {
     const calendar = app.querySelector('.calendar-layout');
-    const heading = app.querySelector('.page-heading');
+    const summary = app.querySelector('.summary');
     const picker = app.querySelector('.property-picker');
     const details = app.querySelector('#selected-property');
-    if (calendar && heading) heading.after(calendar);
+    if (calendar && summary) summary.after(calendar);
     if (picker && details) picker.after(details);
   };
   placeCalendarFirst();
   requestAnimationFrame(placeCalendarFirst);
   setTimeout(placeCalendarFirst, 50);
+}
+
+function reportRange(mode, value) {
+  const selected = value || (mode === 'year' ? String(new Date().getFullYear()) : currentMonth());
+  const start = mode === 'year' ? `${selected}-01-01` : `${selected}-01`;
+  const reference = new Date(`${start}T12:00:00`);
+  if (mode === 'year') reference.setFullYear(reference.getFullYear() + 1); else reference.setMonth(reference.getMonth() + 1);
+  return { selected, start, end: reference.toISOString().slice(0, 10) };
+}
+function reportDate(row) { return row.data_recebimento || row.data_lancamento || row.data_vencimento || ''; }
+function csvCell(value) { return `"${String(value ?? '').replaceAll('"', '""')}"`; }
+function exportAccountingExcel(report) {
+  if (!window.XLSX) return notify('Não foi possível carregar o gerador de Excel. Atualize a página e tente novamente.', true);
+  const workbook = XLSX.utils.book_new();
+  const summary = [['RELATÓRIO CONTÁBIL', report.label], [], ['INDICADOR', 'VALOR'], ['RECEBIDO', report.received], ['PAGAMENTOS PENDENTES', report.paymentPending], ['GASTOS PAGOS', report.expensePaid], ['GASTOS PENDENTES', report.expensePending]];
+  const payments = [['DATA', 'PATRIMÔNIO', 'TIPO', 'VALOR', 'STATUS'], ...report.payments.map(row => [reportDate(row), row.asset, row.tipo === 'recorrente' ? 'RECORRENTE' : 'AVULSO', Number(row.valor || 0), row.pago ? 'RECEBIDO' : 'PENDENTE'])];
+  const expenses = [['DATA', 'PATRIMÔNIO', 'DESCRIÇÃO', 'CATEGORIA', 'VALOR', 'STATUS'], ...report.expenses.map(row => [row.data, row.asset, row.descricao, row.categoria, Number(row.valor || 0), row.pago ? 'PAGO' : 'PENDENTE'])];
+  [['Resumo', summary], ['Pagamentos', payments], ['Gastos', expenses]].forEach(([name, rows]) => { const sheet = XLSX.utils.aoa_to_sheet(rows); sheet['!cols'] = rows[0].map((_, index) => ({ wch: Math.min(42, Math.max(14, ...rows.map(row => String(row[index] ?? '').length + 2))) })); XLSX.utils.book_append_sheet(workbook, sheet, name); });
+  XLSX.writeFile(workbook, `relatorio-contabil-${report.range.selected}.xlsx`);
+}
+function exportAccountingPdf(report) {
+  const paymentRows = report.payments.map(row => `<tr><td>${esc(dateTime(reportDate(row)))}</td><td>${esc(row.asset)}</td><td>${esc(row.tipo === 'recorrente' ? 'Recorrente' : 'Avulso')}</td><td>${money(row.valor)}</td><td>${row.pago ? 'Recebido' : 'Pendente'}</td></tr>`).join('') || '<tr><td colspan="5">Nenhum pagamento no período.</td></tr>';
+  const expenseRows = report.expenses.map(row => `<tr><td>${esc(dateTime(row.data))}</td><td>${esc(row.asset)}</td><td>${esc(row.descricao)}</td><td>${esc(row.categoria)}</td><td>${money(row.valor)}</td><td>${row.pago ? 'Pago' : 'Pendente'}</td></tr>`).join('') || '<tr><td colspan="6">Nenhum gasto no período.</td></tr>';
+  const popup = window.open('', '_blank');
+  if (!popup) return notify('Permita pop-ups no navegador para exportar o PDF.', true);
+  try { popup.opener = null; } catch { /* O navegador pode bloquear esta proteção adicional. */ }
+  popup.document.write(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Relatório contábil</title><style>body{font:12px Arial;color:#15231d;margin:32px}h1{margin:0}p{color:#506058}section{margin:24px 0}.summary{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.summary div{border:1px solid #d7e0da;padding:12px;border-radius:7px}.summary span{display:block;color:#64736b;font-size:10px;text-transform:uppercase}.summary strong{font-size:17px}table{width:100%;border-collapse:collapse}th,td{border-bottom:1px solid #dfe7e2;padding:8px;text-align:left}th{font-size:10px;color:#526158;text-transform:uppercase}@media print{body{margin:16px}}</style></head><body><h1>Relatório contábil</h1><p>Período: ${esc(report.label)}</p><section class="summary"><div><span>Recebido</span><strong>${money(report.received)}</strong></div><div><span>Pagamentos pendentes</span><strong>${money(report.paymentPending)}</strong></div><div><span>Gastos pagos</span><strong>${money(report.expensePaid)}</strong></div><div><span>Gastos pendentes</span><strong>${money(report.expensePending)}</strong></div></section><section><h2>Pagamentos</h2><table><thead><tr><th>Data</th><th>Patrimônio</th><th>Tipo</th><th>Valor</th><th>Status</th></tr></thead><tbody>${paymentRows}</tbody></table></section><section><h2>Gastos</h2><table><thead><tr><th>Data</th><th>Patrimônio</th><th>Descrição</th><th>Categoria</th><th>Valor</th><th>Status</th></tr></thead><tbody>${expenseRows}</tbody></table></section><script>window.onload=()=>window.print()</script></body></html>`);
+  popup.document.close();
+}
+function renderReportBreakdown(rows, label) {
+  return rows.length ? rows.map(row => `<div class="report-breakdown-row"><span>${esc(row.name)}</span><strong>${money(row.total)}</strong></div>`).join('') : `<div class="empty">Nenhum ${label} no período.</div>`;
+}
+async function renderReports() {
+  setLoading('Gerando relatório contábil…');
+  try {
+    const mode = state.reportMode || 'month'; const range = reportRange(mode, state.reportPeriod); state.reportPeriod = range.selected;
+    const [assets, payments, expenses, allExpenseCategories] = await Promise.all([
+      fetchHouses(),
+      api(rest('pagamentos_casa', `select=id,patrimonio_id,tipo,categoria,valor,pago,data_lancamento,data_vencimento,data_recebimento&order=data_lancamento.desc.nullslast`)),
+      api(rest('gastos_casa', `select=id,patrimonio_id,descricao,categoria,valor,pago,data,data_pagamento&data=gte.${range.start}&data=lt.${range.end}&order=data.desc`)),
+      api(rest('gastos_casa', 'select=categoria')),
+    ]);
+    const assetMap = new Map(assets.map(asset => [asset.id, assetLabel(asset)]));
+    const inRangePayments = payments.filter(row => { const date = reportDate(row); return date >= range.start && date < range.end; }).map(row => ({ ...row, asset: assetMap.get(row.patrimonio_id) || 'Patrimônio removido', categoria: normalizeCategory(row.categoria || 'OUTRAS RECEITAS') }));
+    const inRangeExpenses = expenses.map(row => ({ ...row, asset: assetMap.get(row.patrimonio_id) || 'Patrimônio removido', categoria: String(row.categoria || 'SEM CATEGORIA').trim().toUpperCase() }));
+    const reportCategories = [...new Set([...payments.map(row => normalizeCategory(row.categoria || 'OUTRAS RECEITAS')), ...allExpenseCategories.map(row => normalizeCategory(row.categoria || 'SEM CATEGORIA'))].filter(Boolean))].sort();
+    const selectedCategory = state.reportCategory || '';
+    const filteredPayments = selectedCategory ? inRangePayments.filter(row => row.categoria === selectedCategory) : inRangePayments;
+    const filteredExpenses = selectedCategory ? inRangeExpenses.filter(row => row.categoria === selectedCategory) : inRangeExpenses;
+    const received = filteredPayments.filter(row => row.pago).reduce((sum, row) => sum + Number(row.valor || 0), 0);
+    const paymentPending = filteredPayments.filter(row => !row.pago).reduce((sum, row) => sum + Number(row.valor || 0), 0);
+    const expensePaid = filteredExpenses.filter(row => row.pago).reduce((sum, row) => sum + Number(row.valor || 0), 0);
+    const expensePending = filteredExpenses.filter(row => !row.pago).reduce((sum, row) => sum + Number(row.valor || 0), 0);
+    const group = (rows, key) => [...rows.reduce((map, row) => map.set(row[key], (map.get(row[key]) || 0) + Number(row.valor || 0)), new Map()).entries()].map(([name, total]) => ({ name, total })).sort((a, b) => b.total - a.total);
+    const label = new Intl.DateTimeFormat('pt-BR', mode === 'year' ? { year: 'numeric' } : { month: 'long', year: 'numeric' }).format(new Date(`${range.start}T12:00:00`));
+    const report = { range, label, payments: filteredPayments, expenses: filteredExpenses, received, paymentPending, expensePaid, expensePending };
+    state.accountingReport = report;
+    app.innerHTML = heading('Organização fiscal', 'Relatórios contábeis', 'Consulte, filtre e exporte os lançamentos financeiros.') + `<section class="card report-filters"><div class="field"><label for="report-mode">Período</label><select id="report-mode"><option value="month" ${mode === 'month' ? 'selected' : ''}>MÊS</option><option value="year" ${mode === 'year' ? 'selected' : ''}>ANO</option></select></div><div class="field"><label for="report-period">Selecione</label><input id="report-period" type="${mode === 'year' ? 'number' : 'month'}" ${mode === 'year' ? 'min="2000" max="2100" step="1"' : ''} value="${esc(range.selected)}"></div><div class="field"><label for="report-category">Categoria</label><select id="report-category"><option value="">TODAS AS CATEGORIAS</option>${reportCategories.map(category => `<option value="${esc(category)}" ${category === selectedCategory ? 'selected' : ''}>${esc(category)}</option>`).join('')}</select></div><div class="report-export"><button class="button secondary" type="button" data-export-excel>Exportar Excel</button><button class="button" type="button" data-export-pdf>Exportar PDF</button></div></section><section class="summary report-summary"><article class="card metric"><span>Recebido</span><strong>${money(received)}</strong></article><article class="card metric"><span>Pagamentos pendentes</span><strong>${money(paymentPending)}</strong></article><article class="card metric"><span>Gastos pagos</span><strong>${money(expensePaid)}</strong></article><article class="card metric"><span>Gastos pendentes</span><strong>${money(expensePending)}</strong></article></section><section class="report-breakdowns"><article class="card report-breakdown"><h2>Por patrimônio</h2>${renderReportBreakdown(group([...filteredPayments, ...filteredExpenses], 'asset'), 'lançamento')}</article><article class="card report-breakdown"><h2>Receitas por categoria</h2>${renderReportBreakdown(group(filteredPayments, 'categoria'), 'receita')}</article><article class="card report-breakdown"><h2>Gastos por categoria</h2>${renderReportBreakdown(group(filteredExpenses, 'categoria'), 'gasto')}</article></section>`;
+    app.querySelector('#report-mode').onchange = event => { state.reportMode = event.target.value; state.reportPeriod = event.target.value === 'year' ? String(new Date().getFullYear()) : currentMonth(); state.reportCategory = ''; renderReports(); };
+    app.querySelector('#report-period').onchange = event => { state.reportPeriod = event.target.value; state.reportCategory = ''; renderReports(); };
+    app.querySelector('#report-category').onchange = event => { state.reportCategory = event.target.value; renderReports(); };
+    app.querySelector('[data-export-excel]').onclick = () => exportAccountingExcel(state.accountingReport);
+    app.querySelector('[data-export-pdf]').onclick = () => exportAccountingPdf(state.accountingReport);
+  } catch (error) { showError(error); }
+}
+
+function normalizeCategory(value) { return String(value || '').trim().replace(/\s+/g, ' ').toLocaleUpperCase('pt-BR'); }
+async function loadGastos() {
+  await fetchHouses(); const gastos = await api(rest('gastos_casa', 'select=id,patrimonio_id,descricao,categoria,valor,pago,recorrente,data,data_pagamento&order=data.desc')); const assets = new Map(state.houses.map(asset => [asset.id, asset])); const categories = [...new Set(gastos.map(item => normalizeCategory(item.categoria)).filter(Boolean))].sort();
+  app.innerHTML = heading('Despesas', 'Gastos', 'Registre gastos atuais ou retroativos associados aos seus patrimônios.') + `<section class="card form-card"><h2 class="card-title">Novo gasto</h2><form id="expense-form" class="form-grid"><div class="field"><label>Patrimônio *</label><select name="patrimonio_id" required><option value="">Selecione</option>${assetOptions()}</select></div><div class="field"><label>Descrição *</label><input name="descricao" required></div><div class="field"><label>Categoria *</label><input name="categoria" id="expense-category" list="expense-category-options" placeholder="PESQUISE OU DIGITE" required><datalist id="expense-category-options">${categories.map(category => `<option value="${esc(category)}">`).join('')}</datalist></div><div class="field"><label>Valor *</label><input name="valor" type="number" min="0.01" step="0.01" required></div><div class="field"><label>Data do gasto *</label><input name="data" type="date" required value="${new Date().toISOString().slice(0,10)}"></div><div class="form-actions"><button class="button">Salvar gasto</button></div></form></section><section class="card table-card"><div class="table-head"><h2>Gastos</h2><button id="reload" class="button secondary small">Atualizar</button></div><div class="table-wrap"><table><thead><tr><th>Patrimônio</th><th>Descrição</th><th>Valor</th><th>Data do gasto</th><th>Status</th><th>Pago em</th><th></th></tr></thead><tbody>${gastos.map(item => `<tr><td>${esc(assets.has(item.patrimonio_id) ? assetLabel(assets.get(item.patrimonio_id)) : 'Patrimônio removido')}</td><td>${esc(item.descricao)}<br><small>${esc(normalizeCategory(item.categoria))}</small></td><td>${money(item.valor)}</td><td><input class="table-date" type="date" data-expense-date="${item.id}" value="${esc(item.data)}"></td><td><span class="pill ${item.pago ? 'ok' : 'pending'}">${item.pago ? 'Pago' : 'Pendente'}</span></td><td>${item.data_pagamento ? dateTime(item.data_pagamento) : '—'}</td><td><div class="action-row"><button class="icon-button" title="Atualizar data" aria-label="Atualizar data" data-update-expense="${item.id}">↻</button><button class="icon-button" title="${item.pago ? 'Marcar pendente' : 'Marcar pago'}" aria-label="${item.pago ? 'Marcar pendente' : 'Marcar pago'}" data-toggle-expense="${item.id}" data-paid="${item.pago}">${item.pago ? '↩' : '✓'}</button><button class="icon-button delete" title="Excluir gasto" aria-label="Excluir gasto" data-delete-expense="${item.id}">⌫</button></div></td></tr>`).join('') || '<tr><td colspan="7" class="empty">Nenhum gasto cadastrado.</td></tr>'}</tbody></table></div></section>`;
+  const categoryInput = app.querySelector('#expense-category'); categoryInput.oninput = () => { categoryInput.value = categoryInput.value.toLocaleUpperCase('pt-BR'); };
+  app.querySelector('#expense-form').onsubmit = createExpense; app.querySelector('#reload').onclick = refresh;
+  app.querySelectorAll('[data-update-expense]').forEach(button => button.onclick = async () => { const date = app.querySelector(`[data-expense-date="${button.dataset.updateExpense}"]`).value; if (!date) return notify('Informe a data do gasto.', true); try { await api(rest('gastos_casa', `id=eq.${button.dataset.updateExpense}`), jsonOptions('PATCH', { data: date }, { Prefer: 'return=minimal' })); notify('Data atualizada.'); await loadGastos(); } catch (error) { notify(error.message, true); } });
+  app.querySelectorAll('[data-toggle-expense]').forEach(button => button.onclick = () => patchExpense(button.dataset.toggleExpense, button.dataset.paid !== 'true'));
+  app.querySelectorAll('[data-delete-expense]').forEach(button => button.onclick = () => removeFinancialRecord('gastos_casa', button.dataset.deleteExpense, loadGastos));
+}
+async function createExpense(event) {
+  event.preventDefault(); const data = Object.fromEntries(new FormData(event.currentTarget)); const category = normalizeCategory(data.categoria); if (!category) return notify('Informe uma categoria.', true);
+  try { await api(rest('gastos_casa'), jsonOptions('POST', { patrimonio_id: Number(data.patrimonio_id), descricao: data.descricao.trim(), categoria: normalizeCategory(data.categoria), valor: Number(data.valor), pago: false, recorrente: false, data: data.data, data_vencimento: data.data_vencimento || null }, { Prefer: 'return=minimal' })); notify('Gasto cadastrado.'); await refresh(); } catch (error) { notify(error.message, true); }
+}
+
+const DEFAULT_INCOME_CATEGORIES = ['ALUGUEL', 'VENDA', 'SERVIÇOS', 'REEMBOLSO', 'OUTRAS RECEITAS'];
+async function openManualPaymentForm() {
+  const assets = state.houses.length ? state.houses : await fetchHouses();
+  const rows = await api(rest('pagamentos_casa', 'select=categoria&order=categoria.asc'));
+  const categories = [...new Set([...DEFAULT_INCOME_CATEGORIES, ...rows.map(row => normalizeCategory(row.categoria)).filter(Boolean)])].sort();
+  const modal = document.createElement('div'); modal.className = 'modal-backdrop'; modal.id = 'manual-payment-modal';
+  modal.innerHTML = `<section class="modal property-modal payment-modal"><button class="modal-close" type="button">×</button><p class="eyebrow">Nova receita</p><h2>Adicionar pagamento</h2><form id="manual-payment-form" class="form-grid"><div class="field"><label>Patrimônio *</label><select name="patrimonio_id" required><option value="">Selecione</option>${assets.map(asset => `<option value="${asset.id}">${esc(assetLabel(asset))}</option>`).join('')}</select></div><div class="field"><label>Categoria *</label><input name="categoria" id="income-category" list="income-category-options" value="OUTRAS RECEITAS" required><datalist id="income-category-options">${categories.map(category => `<option value="${esc(category)}">`).join('')}</datalist></div><div class="field"><label>Tipo *</label><select name="tipo"><option value="recorrente">Recorrente</option><option value="avulso">Avulso</option></select></div><div class="field"><label>Valor *</label><input name="valor" type="number" min="0.01" step="0.01" required></div><div class="field"><label>Data do lançamento *</label><input name="data_lancamento" type="date" required value="${new Date().toISOString().slice(0,10)}"></div><div class="field"><label>Data de vencimento</label><input name="data_vencimento" type="date"></div><div class="modal-actions"><button type="button" class="button secondary modal-cancel">Cancelar</button><button class="button">Salvar</button></div></form></section>`;
+  document.body.append(modal); const category = modal.querySelector('#income-category'); category.oninput = () => { category.value = category.value.toLocaleUpperCase('pt-BR'); }; modal.querySelector('#manual-payment-form').onsubmit = createManualPayment; modal.querySelectorAll('.modal-close,.modal-cancel').forEach(button => button.onclick = () => modal.remove());
+}
+async function createManualPayment(event) {
+  event.preventDefault(); const data = Object.fromEntries(new FormData(event.currentTarget)); const category = normalizeCategory(data.categoria); if (!category) return notify('Informe uma categoria.', true); if (data.tipo === 'recorrente' && !data.data_vencimento) return notify('Informe a data de vencimento do pagamento recorrente.', true);
+  try { await api(rest('pagamentos_casa'), jsonOptions('POST', { patrimonio_id: Number(data.patrimonio_id), categoria: normalizeCategory(data.categoria), tipo: data.tipo, valor: Number(data.valor), data_lancamento: data.data_lancamento, data_vencimento: data.data_vencimento || null, pago: false }, { Prefer: 'return=minimal' })); document.querySelector('#manual-payment-modal')?.remove(); notify('Pagamento cadastrado.'); await loadPagamentos(); } catch (error) { notify(error.message, true); }
+}
+async function loadPagamentos() {
+  await fetchHouses(); const payments = await api(rest('pagamentos_casa', 'select=id,patrimonio_id,tipo,categoria,valor,data_lancamento,data_vencimento,pago,data_recebimento&order=data_lancamento.desc.nullslast')); const assets = new Map(state.houses.map(asset => [asset.id, asset]));
+  const received = payments.filter(item => item.pago).reduce((sum, item) => sum + Number(item.valor), 0); const pending = payments.filter(item => !item.pago).reduce((sum, item) => sum + Number(item.valor), 0);
+  app.innerHTML = heading('Receitas', 'Pagamentos', 'Cadastre receitas atuais ou retroativas.', '<button id="add-manual-payment" class="button">Adicionar receita</button>') + `<section class="summary"><div class="card metric"><span>Pagamentos cadastrados</span><strong>${payments.length}</strong></div><div class="card metric"><span>Recebido</span><strong>${money(received)}</strong></div><div class="card metric"><span>Pendente</span><strong>${money(pending)}</strong></div></section><section class="card table-card"><div class="table-head"><h2>Todos os pagamentos</h2><button id="reload" class="button secondary small">Atualizar</button></div><div class="table-wrap"><table><thead><tr><th>Patrimônio</th><th>Categoria</th><th>Tipo</th><th>Valor</th><th>Lançamento</th><th>Vencimento</th><th>Status</th><th>Recebido em</th><th></th></tr></thead><tbody>${payments.length ? payments.map(item => `<tr><td>${esc(assets.has(item.patrimonio_id) ? assetLabel(assets.get(item.patrimonio_id)) : 'Patrimônio removido')}</td><td>${esc(normalizeCategory(item.categoria || 'OUTRAS RECEITAS'))}</td><td>${item.tipo === 'recorrente' ? 'Recorrente' : 'Avulso'}</td><td>${money(item.valor)}</td><td>${item.data_lancamento ? dateTime(item.data_lancamento) : '—'}</td><td>${item.data_vencimento ? dateTime(item.data_vencimento) : '—'}</td><td><span class="pill ${item.pago ? 'ok' : 'pending'}">${item.pago ? 'Recebido' : 'Pendente'}</span></td><td><input class="table-date" type="date" data-received-date="${item.id}" value="${esc(item.data_recebimento || new Date().toISOString().slice(0,10))}"></td><td><div class="action-row"><button class="icon-button" title="Atualizar data" aria-label="Atualizar data" data-update-payment="${item.id}">↻</button><button class="icon-button" title="${item.pago ? 'Marcar pendente' : 'Marcar recebido'}" aria-label="${item.pago ? 'Marcar pendente' : 'Marcar recebido'}" data-toggle-payment="${item.id}" data-paid="${item.pago}">${item.pago ? '↩' : '✓'}</button><button class="icon-button delete" title="Excluir pagamento" aria-label="Excluir pagamento" data-delete-payment="${item.id}">⌫</button></div></td></tr>`).join('') : '<tr><td colspan="9" class="empty">Nenhum pagamento cadastrado.</td></tr>'}</tbody></table></div></section>`;
+  app.querySelector('#reload').onclick = refresh; app.querySelector('#add-manual-payment').onclick = openManualPaymentForm;
+  app.querySelectorAll('[data-update-payment]').forEach(button => button.onclick = async () => { const date = app.querySelector(`[data-received-date="${button.dataset.updatePayment}"]`).value; if (!date) return notify('Informe a data de recebimento.', true); try { await api(rest('pagamentos_casa', `id=eq.${button.dataset.updatePayment}`), jsonOptions('PATCH', { pago: true, data_recebimento: date }, { Prefer: 'return=minimal' })); notify('Pagamento atualizado.'); await loadPagamentos(); } catch (error) { notify(error.message, true); } });
+  app.querySelectorAll('[data-toggle-payment]').forEach(button => button.onclick = async () => { const paid = button.dataset.paid !== 'true'; const date = paid ? app.querySelector(`[data-received-date="${button.dataset.togglePayment}"]`).value : null; if (paid && !date) return notify('Informe a data de recebimento.', true); try { await api(rest('pagamentos_casa', `id=eq.${button.dataset.togglePayment}`), jsonOptions('PATCH', { pago: paid, data_recebimento: date }, { Prefer: 'return=minimal' })); notify('Status atualizado.'); await loadPagamentos(); } catch (error) { notify(error.message, true); } });
+  app.querySelectorAll('[data-delete-payment]').forEach(button => button.onclick = () => removeFinancialRecord('pagamentos_casa', button.dataset.deletePayment, loadPagamentos));
 }

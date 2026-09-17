@@ -49,7 +49,7 @@ test('webhook exige assinatura do ID da URL e do request-id', async () => {
   assert.equal(await verifyWebhook(new Request('https://example.test?data.id=abc123', { headers: { ...headers, 'x-request-id': 'other' } }), secret), false);
   assert.equal(await verifyWebhook(new Request('https://example.test?data.id=abc123'), secret), false);
 });
-test('pré-verificação usa o total no Free e a quantidade por patrimônio no Básico', async () => {
+test('pré-verificação respeita os limites de patrimônio e documentos de cada plano', async () => {
   let info = { plan: 'free', assets: 1, asset_limit: 1, documents: 5, document_limit: 5, documents_by_asset: { 1: 5 } };
   const context = vm.createContext({ api: async () => info, jsonOptions: () => ({}), money: n => String(n) });
   vm.runInContext(fs.readFileSync(new URL('../billing.js', import.meta.url), 'utf8'), context);
@@ -59,7 +59,9 @@ test('pré-verificação usa o total no Free e a quantidade por patrimônio no B
   await vm.runInContext("checkPlanQuota('asset')", context);
   await assert.rejects(vm.runInContext("checkPlanQuota('document',1)", context), /Limite de documentos/);
   await vm.runInContext("checkPlanQuota('document',2)", context);
-  info = { ...info, plan: 'pro', assets: 1000, documents: 1000, asset_limit: null, document_limit: null };
+  info = { ...info, plan: 'pro', assets: 14, documents: 1000, asset_limit: 15, document_limit: null };
   await vm.runInContext("checkPlanQuota('asset')", context);
+  info = { ...info, assets: 15 };
+  await assert.rejects(vm.runInContext("checkPlanQuota('asset')", context), /Limite de patrimônios/);
   await vm.runInContext("checkPlanQuota('document',1)", context);
 });
