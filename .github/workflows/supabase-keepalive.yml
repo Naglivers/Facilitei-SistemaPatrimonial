@@ -1,0 +1,33 @@
+name: Manter Supabase ativo
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  keepalive:
+    name: Consulta de atividade ao Supabase
+    runs-on: ubuntu-latest
+    steps:
+      - name: Consultar um registro sem alterar dados
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "Configure os secrets SUPABASE_URL e SUPABASE_ANON_KEY no repositório."
+            exit 1
+          fi
+
+          base_url="${SUPABASE_URL%/}"
+          base_url="${base_url%/rest/v1}"
+          curl --fail-with-body --silent --show-error --max-time 20 \
+            --get "$base_url/rest/v1/patrimonio" \
+            --data-urlencode 'select=id' \
+            --data-urlencode 'limit=1' \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -H "Authorization: Bearer $SUPABASE_ANON_KEY"

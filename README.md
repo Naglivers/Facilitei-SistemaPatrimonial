@@ -20,6 +20,17 @@ Aplicação web leve para gerir imóveis, pagamentos mensais, gastos e documento
 
 1. Para desenvolvimento local, crie `config.js` na raiz a partir de `config.example.js`. Para publicar no GitHub Pages, use `config.public.js`.
 2. Preencha a URL do Supabase e uma chave **anon/public** válida. A URL pode ser a raiz (`https://seu-projeto.supabase.co`) ou a URL REST antiga usada no flow (`https://seu-projeto.supabase.co/rest/v1/`); a aplicação aceita ambas. Para ativar o botão oficial do Google, inclua também o Client ID público em `GOOGLE_CLIENT_ID`.
+
+### Manter o projeto Supabase ativo
+
+O GitHub Pages apenas hospeda os arquivos estáticos; ele não executa chamadas periódicas ao Supabase. O workflow [`.github/workflows/supabase-keepalive.yml`](.github/workflows/supabase-keepalive.yml) faz uma consulta de leitura a cada 30 minutos, sem modificar nenhum dado.
+
+No repositório do GitHub, crie estes *Actions secrets* em **Settings → Secrets and variables → Actions**:
+
+- `SUPABASE_URL`: a URL raiz do projeto, por exemplo `https://seu-projeto.supabase.co`.
+- `SUPABASE_ANON_KEY`: a chave pública/anon do projeto.
+
+Após enviar o workflow para a branch padrão, abra **Actions → Manter Supabase ativo → Run workflow** uma vez para validar a configuração. Os agendamentos do GitHub Actions são executados na branch padrão e podem sofrer pequenos atrasos.
 3. No Supabase, em **Authentication > Providers**, habilite o provedor **Email**. Se a confirmação de e-mail estiver ativada, o usuário precisará confirmar a mensagem recebida antes de fazer login.
 4. Para o Google, crie um cliente OAuth do tipo **Aplicativo da Web**, adicione a URL do site em **Authorized JavaScript origins** e configure o Client ID e o Client Secret em **Authentication > Providers > Google** no Supabase. O botão usa o Google Identity Services e entrega o token de identidade ao Supabase.
 5. Sirva a pasta por um servidor HTTP local. Por exemplo, com a extensão Live Server do VS Code, ou:
