@@ -627,6 +627,8 @@ async function uploadDocument(event) {
   const file = data.get('file');
   if (!file?.size || file.size > 1024 * 1024 * 1024 || !['application/pdf','image/png','image/jpeg'].includes(file.type)) return notify('Escolha um PDF, PNG ou JPEG de até 1 GB.', true);
   const assetId = Number(data.get('patrimonio_id'));
+  const userId = state.session?.user?.id;
+  if (!userId) return notify('Sua sessão não foi identificada. Entre novamente e tente enviar o documento.', true);
   const path = 'patrimonios/' + assetId + '/' + crypto.randomUUID() + '_' + safeFileName(file.name);
   let reservation;
   let uploaded = false;
@@ -636,7 +638,7 @@ async function uploadDocument(event) {
     // A reserva de cota deve existir antes do envio ao Storage.
     const rows = await api(rest('documentos_casa'), jsonOptions('POST', {
       patrimonio_id: assetId, nome_arquivo: file.name, tipo_arquivo: file.type, tamanho: file.size,
-      caminho_arquivo: path, descricao: data.get('descricao').trim() || null,
+      caminho_arquivo: path, descricao: data.get('descricao').trim() || null, user_id: userId,
     }, { Prefer: 'return=representation' }));
     reservation = rows[0];
     await api('/storage/v1/object/documentos/' + path.split('/').map(encodeURIComponent).join('/'), {
@@ -876,8 +878,8 @@ async function renderSelectedProperty() {
         value: { label: 'Editar patrimônio', run: modal => { modal.remove(); target.querySelector('.edit-property')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } },
         received: { label: 'Adicionar receita', run: async modal => { modal.remove(); await openManualPaymentForm(); const select = document.querySelector('#manual-payment-form [name="patrimonio_id"]'); if (select) select.value = String(asset.id); } },
         expenses: { label: 'Adicionar gasto', run: modal => { modal.remove(); openPageForm('gastos', 'add-expense'); } },
-        photos: { label: 'Adicionar fotos', run: modal => { modal.remove(); openPageForm('documentos', 'add-document'); } },
-        documents: { label: 'Adicionar documento', run: modal => { modal.remove(); openPageForm('documentos', 'add-document'); } },
+        photos: { label: 'Adicionar fotos', run: modal => { modal.remove(); openPropertyUploadModal(asset.id, 'foto'); } },
+        documents: { label: 'Adicionar documento', run: modal => { modal.remove(); openPropertyUploadModal(asset.id, 'documento'); } },
       };
       openPropertyMetricModal(button.querySelector('span').textContent, content, actions[button.dataset.propertyMetric]);
     });
@@ -1127,6 +1129,141 @@ async function loadGastos() {
 async function createExpense(event) {
   event.preventDefault(); const data = Object.fromEntries(new FormData(event.currentTarget)); const category = normalizeCategory(data.categoria); if (!category) return notify('Informe uma categoria.', true);
   try { await api(rest('gastos_casa'), jsonOptions('POST', { patrimonio_id: Number(data.patrimonio_id), descricao: data.descricao.trim(), categoria: normalizeCategory(data.categoria), valor: Number(data.valor), pago: false, recorrente: false, data: data.data, data_vencimento: data.data_vencimento || null }, { Prefer: 'return=minimal' })); notify('Gasto cadastrado.'); await refresh(); } catch (error) { notify(error.message, true); }
+}
+
+async function fetchPropertyFiles(ids) {
+  const uniqueIds = [...new Set(ids.map(Number).filter(Number.isFinite))];
+  if (!uniqueIds.length) return [];
+  const filter = `select=id,nome_arquivo,tipo_arquivo,descricao,caminho_arquivo&patrimonio_id=eq.${state.selectedHouseId}&id=in.(${uniqueIds.join(',')})`;
+  return api(rest('documentos_casa', filter));
+}
+
+async function openPropertyFiles(ids) {
+  // Uma única aba é criada durante o clique; assim não há bloqueio de pop-ups
+  // e todos os arquivos selecionados ficam reunidos na mesma visualização.
+  const requestedIds = [...new Set(ids.map(Number).filter(Number.isFinite))];
+  const viewer = window.open('about:blank', '_blank');
+  if (!viewer) return notify('O navegador bloqueou a aba. Permita pop-ups para este site e tente novamente.', true);
+  viewer.document.title = 'Carregando arquivos…';
+  viewer.document.body.innerHTML = '<p style="font:16px system-ui;padding:24px">Carregando arquivos selecionados…</p>';
+  try {
+    const files = await fetchPropertyFiles(requestedIds);
+    if (!files.length) throw new Error('Nenhum arquivo foi encontrado.');
+    const items = await Promise.all(files.map(async file => {
+      const signedData = await api(`/storage/v1/object/sign/documentos/${file.caminho_arquivo.split('/').map(encodeURIComponent).join('/')}`, jsonOptions('POST', { expiresIn: 3600 }));
+      const signed = signedData.signedURL || signedData.signedUrl;
+      if (!signed) throw new Error(`Não foi possível abrir “${file.nome_arquivo}”.`);
+      return { file, url: signed.startsWith('http') ? signed : `${supabaseBase()}/storage/v1${signed}` };
+    }));
+    const blocks = items.map(({ file, url }) => {
+      const name = esc(file.nome_arquivo);
+      const source = esc(url);
+      return String(file.tipo_arquivo || '').startsWith('image/')
+        ? `<section><h2>${name}</h2><img src="${source}" alt="${name}"><p><a href="${source}" target="_blank" rel="noopener">Abrir arquivo original</a></p></section>`
+        : `<section><h2>${name}</h2><iframe src="${source}" title="${name}"></iframe><p><a href="${source}" target="_blank" rel="noopener">Abrir arquivo original</a></p></section>`;
+    }).join('');
+    viewer.document.open();
+    viewer.document.write(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Arquivos selecionados</title><style>body{margin:0;background:#f4f7f8;color:#102b38;font:15px system-ui,sans-serif}header{position:sticky;top:0;padding:18px 24px;background:#fff;border-bottom:1px solid #dce6e9;z-index:1}h1{font-size:20px;margin:0}main{max-width:1000px;margin:auto;padding:22px}section{margin:0 0 24px;padding:18px;background:#fff;border:1px solid #dce6e9;border-radius:12px;box-shadow:0 5px 18px #102b3812}h2{font-size:16px;overflow-wrap:anywhere;margin:0 0 14px}iframe{display:block;width:100%;height:78vh;border:1px solid #dce6e9;border-radius:8px}img{display:block;max-width:100%;max-height:78vh;margin:auto;border-radius:8px;object-fit:contain;background:#f4f7f8}a{color:#078fca;font-weight:650}</style></head><body><header><h1>${items.length} arquivo${items.length > 1 ? 's' : ''} selecionado${items.length > 1 ? 's' : ''}</h1></header><main>${blocks}</main></body></html>`);
+    viewer.document.close();
+  } catch (error) { viewer.close(); notify(error.message, true); }
+}
+
+async function deletePropertyFiles(ids, label = 'arquivo') {
+  const files = await fetchPropertyFiles(ids);
+  if (!files.length) return;
+  const plural = files.length > 1;
+  const confirmation = plural ? 'Você realmente quer deletar esses arquivos?' : `Apagar este ${label} permanentemente?`;
+  if (!confirm(confirmation)) return;
+  try {
+    const paths = files.map(file => file.caminho_arquivo).filter(Boolean);
+    if (paths.length) await api('/storage/v1/object/documentos', jsonOptions('DELETE', { prefixes: paths }));
+    await Promise.all(files.map(file => api(rest('documentos_casa', `id=eq.${file.id}`), jsonOptions('DELETE', null, { Prefer: 'return=minimal' }))));
+    state.documentos = state.documentos.filter(file => !files.some(deleted => String(deleted.id) === String(file.id)));
+    notify(plural ? `${files.length} ${label}s apagados.` : `${label[0].toUpperCase()}${label.slice(1)} apagado.`);
+    if (state.page === 'casas') await renderSelectedProperty();
+    if (state.page === 'documentos') await loadDocumentos();
+    return true;
+  } catch (error) { notify(error.message, true); return false; }
+}
+
+function openPropertyMetricModal(title, content, action = null) {
+  document.querySelector('#property-metric-modal')?.remove();
+  const modal = document.createElement('div'); modal.id = 'property-metric-modal'; modal.className = 'modal-backdrop';
+  modal.innerHTML = `<section class="modal property-modal metric-modal"><button class="modal-close" type="button" aria-label="Fechar">×</button><p class="eyebrow">Detalhes</p><h2>${esc(title)}</h2><div class="metric-modal-content">${content}</div><div class="modal-actions">${action ? `<button type="button" class="button" data-metric-add>${esc(action.label)}</button>` : ''}<button type="button" class="button secondary modal-cancel">Fechar</button></div></section>`;
+  document.body.append(modal); modal.querySelectorAll('.modal-close,.modal-cancel').forEach(button => button.onclick = () => modal.remove());
+  modal.querySelectorAll('[data-open-metric-document]').forEach(button => button.onclick = () => openPropertyDocument(Number(button.dataset.openMetricDocument)));
+  modal.querySelectorAll('[data-preview-property-photo]').forEach(button => button.onclick = () => previewPropertyPhoto(Number(button.dataset.previewPropertyPhoto)));
+  modal.querySelector('[data-metric-add]')?.addEventListener('click', () => action.run(modal));
+
+  const rows = [...modal.querySelectorAll('.metric-list-row')].filter(row => row.querySelector('[data-preview-property-photo],[data-open-metric-document]'));
+  if (!rows.length) return;
+  const isPhotoList = Boolean(rows[0].querySelector('[data-preview-property-photo]'));
+  rows.forEach(row => {
+    const trigger = row.querySelector('[data-preview-property-photo],[data-open-metric-document]');
+    const id = trigger.dataset.previewPropertyPhoto || trigger.dataset.openMetricDocument;
+    row.insertAdjacentHTML('afterbegin', `<label class="media-select" title="Selecionar"><input type="checkbox" value="${esc(id)}"><span></span></label>`);
+  });
+  const actions = document.createElement('div'); actions.className = 'media-bulk-actions';
+  actions.innerHTML = `<span data-selected-count>Nenhum selecionado</span><button type="button" class="icon-button" data-open-selected disabled>Abrir selecionados</button><button type="button" class="icon-button delete" data-delete-selected disabled>Apagar selecionados</button>`;
+  modal.querySelector('.metric-modal-content').after(actions);
+  const selectedIds = () => [...actions.parentElement.querySelectorAll('.media-select input:checked')].map(input => Number(input.value));
+  const updateSelection = () => { const count = selectedIds().length; actions.querySelector('[data-selected-count]').textContent = count ? `${count} selecionado${count > 1 ? 's' : ''}` : 'Nenhum selecionado'; actions.querySelectorAll('button').forEach(button => button.disabled = !count); };
+  modal.querySelectorAll('.media-select input').forEach(input => input.addEventListener('change', updateSelection));
+  actions.querySelector('[data-open-selected]').onclick = () => openPropertyFiles(selectedIds());
+  actions.querySelector('[data-delete-selected]').onclick = async () => { const deleted = await deletePropertyFiles(selectedIds(), isPhotoList ? 'foto' : 'documento'); if (deleted) modal.remove(); };
+}
+
+async function previewPropertyPhoto(id) {
+  try {
+    const [photo] = await fetchPropertyFiles([id]);
+    if (!photo) throw new Error('Foto não encontrada.');
+    const signedData = await api(`/storage/v1/object/sign/documentos/${photo.caminho_arquivo.split('/').map(encodeURIComponent).join('/')}`, jsonOptions('POST', { expiresIn: 3600 })); const signed = signedData.signedURL || signedData.signedUrl;
+    if (!signed) throw new Error('Não foi possível carregar a foto.');
+    const url = signed.startsWith('http') ? signed : `${supabaseBase()}/storage/v1${signed}`;
+    const modal = document.createElement('div'); modal.id = 'property-photo-preview'; modal.className = 'modal-backdrop';
+    modal.innerHTML = `<section class="modal property-modal photo-preview-modal"><button class="modal-close" type="button" aria-label="Fechar">×</button><button class="media-delete-button" type="button" aria-label="Apagar foto" title="Apagar foto">×</button><p class="eyebrow">Foto do patrimônio</p><h2>${esc(shortFileName(photo.nome_arquivo))}</h2><img src="${esc(url)}" alt="${esc(photo.nome_arquivo)}"><div class="modal-actions"><a class="button secondary" href="${esc(url)}" target="_blank" rel="noopener">Abrir em outra aba</a><button type="button" class="button modal-cancel">Fechar</button></div></section>`;
+    document.body.append(modal); modal.querySelectorAll('.modal-close,.modal-cancel').forEach(button => button.onclick = () => modal.remove());
+    modal.querySelector('.media-delete-button').onclick = async () => { if (await deletePropertyFiles([photo.id], 'foto')) { document.querySelector('#property-metric-modal')?.remove(); modal.remove(); } };
+  } catch (error) { notify(error.message, true); }
+}
+
+async function openPropertyDocument(id) {
+  try {
+    const [doc] = await fetchPropertyFiles([id]);
+    if (!doc) throw new Error('Documento não encontrado.');
+    const signedData = await api(`/storage/v1/object/sign/documentos/${doc.caminho_arquivo.split('/').map(encodeURIComponent).join('/')}`, jsonOptions('POST', { expiresIn: 3600 })); const signed = signedData.signedURL || signedData.signedUrl;
+    if (!signed) throw new Error('Não foi possível gerar o link do documento.');
+    const url = signed.startsWith('http') ? signed : `${supabaseBase()}/storage/v1${signed}`;
+    const modal = document.createElement('div'); modal.id = 'property-document-preview'; modal.className = 'modal-backdrop';
+    modal.innerHTML = `<section class="modal property-modal document-preview-modal"><button class="modal-close" type="button" aria-label="Fechar">×</button><button class="media-delete-button" type="button" aria-label="Apagar documento" title="Apagar documento">×</button><p class="eyebrow">Documento do patrimônio</p><h2>${esc(shortFileName(doc.nome_arquivo))}</h2><p>${esc(doc.descricao || 'Documento armazenado no patrimônio.')}</p><div class="modal-actions"><a class="button" href="${esc(url)}" target="_blank" rel="noopener">Abrir documento</a><button type="button" class="button secondary modal-cancel">Fechar</button></div></section>`;
+    document.body.append(modal); modal.querySelectorAll('.modal-close,.modal-cancel').forEach(button => button.onclick = () => modal.remove());
+    modal.querySelector('.media-delete-button').onclick = async () => { if (await deletePropertyFiles([doc.id], 'documento')) { document.querySelector('#property-metric-modal')?.remove(); modal.remove(); } };
+  } catch (error) { notify(error.message, true); }
+}
+
+function openPropertyUploadModal(assetId, mode) {
+  const isPhoto = mode === 'foto';
+  const modal = document.createElement('div'); modal.className = 'modal-backdrop'; modal.id = 'property-upload-modal';
+  modal.innerHTML = `<section class="modal property-modal payment-modal"><button class="modal-close" type="button" aria-label="Fechar">×</button><p class="eyebrow">${isPhoto ? 'Fotos' : 'Documentos'} do patrimônio</p><h2>${isPhoto ? 'Adicionar fotos' : 'Adicionar documentos'}</h2><form id="property-upload-form" class="form-grid"><div class="field"><label>${isPhoto ? 'Fotos' : 'Arquivos'} *</label><input name="files" type="file" accept="${isPhoto ? 'image/png,image/jpeg,image/webp' : 'application/pdf,image/png,image/jpeg,image/webp'}" multiple required></div><div class="field"><label>Descrição</label><input name="descricao" placeholder="Opcional"></div><div class="modal-actions"><button type="button" class="button secondary modal-cancel">Cancelar</button><button class="button">Enviar</button></div></form><p class="upload-note">Selecione um ou mais arquivos de até 10 MB cada.</p></section>`;
+  document.body.append(modal); modal.querySelectorAll('.modal-close,.modal-cancel').forEach(button => button.onclick = () => modal.remove());
+  modal.querySelector('#property-upload-form').onsubmit = async event => {
+    event.preventDefault(); const form = event.currentTarget; const button = form.querySelector('.button:not([type=button])'); const files = [...form.querySelector('[name="files"]').files];
+    if (!files.length) return notify('Selecione pelo menos um arquivo.', true);
+    if (files.some(file => file.size > 10 * 1024 * 1024)) return notify('Cada arquivo deve ter no máximo 10 MB.', true);
+    if (isPhoto && files.some(file => !file.type.startsWith('image/'))) return notify('Selecione apenas imagens.', true);
+    const userId = state.session?.user?.id;
+    if (!userId) return notify('Sua sessão não foi identificada. Entre novamente e tente enviar o arquivo.', true);
+    button.disabled = true;
+    try {
+      const description = new FormData(form).get('descricao').trim() || null;
+      for (const [index, file] of files.entries()) {
+        const path = `patrimonios/${assetId}/${Date.now()}_${index}_${safeFileName(file.name)}`;
+        await api(`/storage/v1/object/documentos/${path.split('/').map(encodeURIComponent).join('/')}`, { method: 'POST', headers: { 'Content-Type': file.type, 'x-upsert': 'false' }, body: file });
+        await api(rest('documentos_casa'), jsonOptions('POST', { patrimonio_id: assetId, nome_arquivo: file.name, tipo_arquivo: file.type, tamanho: file.size, caminho_arquivo: path, descricao: description, user_id: userId }, { Prefer: 'return=minimal' }));
+      }
+      modal.remove(); notify(files.length > 1 ? `${files.length} arquivos enviados.` : 'Arquivo enviado.'); await renderSelectedProperty();
+    } catch (error) { notify(error.message, true); } finally { button.disabled = false; }
+  };
 }
 
 const DEFAULT_EXPENSE_CATEGORIES = ['IMPOSTOS', 'SEGUROS', 'ÁGUA', 'ENERGIA', 'OUTROS GASTOS'];
