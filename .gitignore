@@ -7,3 +7,7 @@ supabase/.branches/
 node_modules/
 test-results/
 www/
+android-sdk-local/
+android/keystore.properties
+android/*.keystore
+android/*.jks

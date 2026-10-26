@@ -1204,11 +1204,13 @@ function openPropertyMetricModal(title, content, action = null) {
     row.insertAdjacentHTML('afterbegin', `<label class="media-select" title="Selecionar"><input type="checkbox" value="${esc(id)}"><span></span></label>`);
   });
   const actions = document.createElement('div'); actions.className = 'media-bulk-actions';
-  actions.innerHTML = `<span data-selected-count>Nenhum selecionado</span><button type="button" class="icon-button" data-open-selected disabled>Abrir selecionados</button><button type="button" class="icon-button delete" data-delete-selected disabled>Apagar selecionados</button>`;
+  actions.innerHTML = `<span data-selected-count>Nenhum selecionado</span><button type="button" class="icon-button" data-toggle-select-all>Selecionar todos</button><button type="button" class="icon-button" data-open-selected disabled>Abrir selecionados</button><button type="button" class="icon-button delete" data-delete-selected disabled>Apagar selecionados</button>`;
   modal.querySelector('.metric-modal-content').after(actions);
   const selectedIds = () => [...actions.parentElement.querySelectorAll('.media-select input:checked')].map(input => Number(input.value));
-  const updateSelection = () => { const count = selectedIds().length; actions.querySelector('[data-selected-count]').textContent = count ? `${count} selecionado${count > 1 ? 's' : ''}` : 'Nenhum selecionado'; actions.querySelectorAll('button').forEach(button => button.disabled = !count); };
-  modal.querySelectorAll('.media-select input').forEach(input => input.addEventListener('change', updateSelection));
+  const inputs = [...modal.querySelectorAll('.media-select input')];
+  const updateSelection = () => { const count = selectedIds().length; actions.querySelector('[data-selected-count]').textContent = count ? `${count} selecionado${count > 1 ? 's' : ''}` : 'Nenhum selecionado'; actions.querySelector('[data-toggle-select-all]').textContent = count === inputs.length ? 'Desmarcar todos' : 'Selecionar todos'; actions.querySelectorAll('[data-open-selected],[data-delete-selected]').forEach(button => button.disabled = !count); };
+  inputs.forEach(input => input.addEventListener('change', updateSelection));
+  actions.querySelector('[data-toggle-select-all]').onclick = () => { const mark = selectedIds().length !== inputs.length; inputs.forEach(input => input.checked = mark); updateSelection(); };
   actions.querySelector('[data-open-selected]').onclick = () => openPropertyFiles(selectedIds());
   actions.querySelector('[data-delete-selected]').onclick = async () => { const deleted = await deletePropertyFiles(selectedIds(), isPhotoList ? 'foto' : 'documento'); if (deleted) modal.remove(); };
 }
